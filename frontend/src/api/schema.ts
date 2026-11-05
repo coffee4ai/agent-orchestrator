@@ -4260,6 +4260,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/build": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report the daemon build flags (remote telemetry, Sentry, chat hibernation, fork commit) */
+        get: operations["getSystemBuild"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/github-auth": {
         parameters: {
             query?: never;
@@ -5532,6 +5549,12 @@ export interface components {
         };
         ControllersSetSessionAutoReviewRequest: {
             enabled: boolean;
+        };
+        ControllersSystemBuildResponse: {
+            chatHibernation: boolean;
+            forkCommit: string;
+            sentryEnabled: boolean;
+            telemetryRemote: string;
         };
         ControllersUpdateCloudOfferingRequest: {
             enabled: null | boolean;
@@ -23814,6 +23837,35 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSystemBuild: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControllersSystemBuildResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

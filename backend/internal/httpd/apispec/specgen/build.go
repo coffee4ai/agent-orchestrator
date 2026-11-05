@@ -901,6 +901,14 @@ func systemOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodGet, path: "/api/v1/system/build", id: "getSystemBuild", tag: "system",
+			summary: "Report the daemon build flags (remote telemetry, Sentry, chat hibernation, fork commit)",
+			resps: []respUnit{
+				{http.StatusOK, controllers.SystemBuildResponse{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodGet, path: "/api/v1/system/github-auth", id: "getGitHubAuthRequirement", tag: "system",
 			summary: "Check advisory GitHub CLI authentication without blocking startup",
 			resps: []respUnit{

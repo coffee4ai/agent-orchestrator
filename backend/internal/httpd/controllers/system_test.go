@@ -12,6 +12,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 )
@@ -128,5 +129,34 @@ func TestGetSystemRequirements_NotImplemented(t *testing.T) {
 	_, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/system/requirements", "")
 	if status != http.StatusNotImplemented {
 		t.Fatalf("GET /system/requirements = %d, want %d", status, http.StatusNotImplemented)
+	}
+}
+
+func TestGetSystemBuild(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		SystemBuild: func() controllers.SystemBuildResponse {
+			return controllers.SystemBuildResponse{TelemetryRemote: "off", ForkCommit: "abc1234"}
+		},
+	}, httpd.ControlDeps{}))
+	defer srv.Close()
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/system/build", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET /system/build = %d, body=%s", status, body)
+	}
+	for _, want := range []string{`"telemetryRemote":"off"`, `"sentryEnabled":false`, `"chatHibernation":false`, `"forkCommit":"abc1234"`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("body missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestGetSystemBuild_NotImplemented(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{}, httpd.ControlDeps{}))
+	defer srv.Close()
+	if _, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/system/build", ""); status != http.StatusNotImplemented {
+		t.Fatalf("GET /system/build = %d, want 501", status)
 	}
 }

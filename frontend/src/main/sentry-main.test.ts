@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ElectronMainOptions, ErrorEvent } from "@sentry/electron/main";
-import { DEFAULT_ELECTRON_SENTRY_DSN } from "../shared/sentry-config";
+import { daemonSentryDsn } from "../shared/sentry-config";
 import { DesktopTelemetryController } from "./desktop-telemetry-controller";
 import { clearMainSentryCache, electronMainSentryDsn, initMainSentry, sanitizeRendererCapture } from "./sentry-main";
 
@@ -31,10 +31,15 @@ vi.mock("../shared/telemetry", () => ({ loadOrCreateTelemetryInstallId: vi.fn().
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); sdk.close.mockResolvedValue(true); });
 
 describe("Electron main Sentry configuration", () => {
+	// The fork ships no default DSN, so tests that exercise a live client supply one.
+	beforeEach(() => { vi.stubEnv("AO_ELECTRON_SENTRY_DSN", "https://electron.example/2"); });
+
 	it("keeps Electron and daemon overrides separate and leaves development empty", () => {
 		vi.stubEnv("AO_ELECTRON_SENTRY_DSN", undefined);
 		vi.stubEnv("AO_SENTRY_DSN", "https://daemon.example/1");
-		expect(electronMainSentryDsn(false)).toBe(DEFAULT_ELECTRON_SENTRY_DSN);
+		// Fork build (D10): no baked-in DSN, so Sentry stays off unless env sets one.
+		expect(electronMainSentryDsn(false)).toBe("");
+		expect(daemonSentryDsn(undefined, false)).toBe("");
 		expect(electronMainSentryDsn(true)).toBe("");
 		vi.stubEnv("AO_ELECTRON_SENTRY_DSN", "https://electron.example/2");
 		expect(electronMainSentryDsn(false)).toBe("https://electron.example/2");
@@ -44,13 +49,13 @@ describe("Electron main Sentry configuration", () => {
 	});
 
 	it("creates an offline client with consent-owned crash integrations and an install user", async () => {
-		vi.stubEnv("AO_ELECTRON_SENTRY_DSN", undefined);
+		vi.stubEnv("AO_ELECTRON_SENTRY_DSN", "https://electron.example/2");
 		const transport = await initMainSentry("1.0.0", "/tmp/ao-test", "/tmp/ao-electron-test");
 		expect(transport).toBeTruthy();
 		expect(sdk.init).toHaveBeenCalledOnce();
 		const options = sdk.init.mock.calls[0]?.[0];
 		expect(options).toMatchObject({
-			dsn: DEFAULT_ELECTRON_SENTRY_DSN,
+			dsn: "https://electron.example/2",
 			transport: sdkTransport,
 			transportOptions: { queuePath: "/tmp/ao-electron-test/sentry/queue", shouldSend: expect.any(Function), shouldStore: expect.any(Function) },
 			ipcMode: 0,

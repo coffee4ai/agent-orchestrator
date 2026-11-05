@@ -23,11 +23,14 @@ type SystemChecker interface {
 // SystemController owns the /system routes.
 type SystemController struct {
 	Checks SystemChecker
+	// Build reports the daemon's build flags; nil answers 501.
+	Build func() SystemBuildResponse
 }
 
 // Register mounts the system requirements route on the supplied router.
 func (c *SystemController) Register(r chi.Router) {
 	r.Get("/system/requirements", c.requirements)
+	r.Get("/system/build", c.build)
 	r.Get("/system/github-auth", c.githubAuth)
 	r.Post("/system/github-auth/terminal", c.openGitHubAuthTerminal)
 }
@@ -69,4 +72,12 @@ func (c *SystemController) requirements(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, report)
+}
+
+func (c *SystemController) build(w http.ResponseWriter, r *http.Request) {
+	if c.Build == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/system/build")
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, c.Build())
 }

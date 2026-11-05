@@ -12755,6 +12755,26 @@ paths:
       summary: ""
       tags:
       - conversations
+  /api/v1/system/build:
+    get:
+      operationId: getSystemBuild
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllersSystemBuildResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Report the daemon build flags (remote telemetry, Sentry, chat hibernation,
+        fork commit)
+      tags:
+      - system
   /api/v1/system/github-auth:
     get:
       operationId: getGitHubAuthRequirement
@@ -16015,6 +16035,22 @@ components:
           type: boolean
       required:
       - enabled
+      type: object
+    ControllersSystemBuildResponse:
+      properties:
+        chatHibernation:
+          type: boolean
+        forkCommit:
+          type: string
+        sentryEnabled:
+          type: boolean
+        telemetryRemote:
+          type: string
+      required:
+      - telemetryRemote
+      - sentryEnabled
+      - chatHibernation
+      - forkCommit
       type: object
     ControllersUpdateCloudOfferingRequest:
       properties:

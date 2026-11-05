@@ -20,6 +20,10 @@ describe("update-settings", () => {
 		await rm(dir, { recursive: true, force: true });
 	});
 
+	it("keeps auto-update off by default in the fork (D10)", async () => {
+		expect((await readUpdateSettings(dir)).enabled).toBe(false);
+	});
+
 	it("returns safe defaults when no file exists", async () => {
 		expect(await readUpdateSettings(dir)).toEqual({
 			enabled: false,

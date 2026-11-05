@@ -117,7 +117,7 @@ var _ interface {
 
 // Run starts the daemon and blocks until it exits. SIGINT/SIGTERM drive
 // graceful shutdown through the HTTP server and background workers.
-func Run(buildVersion string) error {
+func Run(buildVersion, buildCommit string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -1034,15 +1034,23 @@ func Run(buildVersion string) error {
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
-		Awake:              awakeSvc,
-		Projects:           projectSvc,
-		ArtifactVersions:   lcStack.ArtifactVersions,
-		HostID:             hostIdentity.HostID,
-		Endpoints:          bs,
-		Agents:             agentSvc,
-		CodexAccounts:      agentSvc,
-		AgentAccounts:      agentAccountSvc,
-		SystemChecks:       systemChecks,
+		Awake:            awakeSvc,
+		Projects:         projectSvc,
+		ArtifactVersions: lcStack.ArtifactVersions,
+		HostID:           hostIdentity.HostID,
+		Endpoints:        bs,
+		Agents:           agentSvc,
+		CodexAccounts:    agentSvc,
+		AgentAccounts:    agentAccountSvc,
+		SystemChecks:     systemChecks,
+		SystemBuild: func() controllers.SystemBuildResponse {
+			return controllers.SystemBuildResponse{
+				TelemetryRemote: string(cfg.Telemetry.Remote),
+				SentryEnabled:   sentryobs.Enabled(),
+				ChatHibernation: settingsSvc.ChatHibernationEnabled(),
+				ForkCommit:      buildCommit,
+			}
+		},
 		Installer:          systemInstall,
 		ComputerUse:        computerUse,
 		Sessions:           sessionSvc,
