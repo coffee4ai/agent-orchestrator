@@ -229,6 +229,7 @@ var shippedMigrations = map[int64]string{
 	20261024194546592: "20261024194546592_conversation_messages_search.sql",
 	20261026185532680: "20261026185532680_usage_telemetry_measurements.sql",
 	20261028124744441: "20261028124744441_telemetry_incremental_vacuum.sql",
+	20261105193701744: "20261105193701744_fork_change_log_event_types.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

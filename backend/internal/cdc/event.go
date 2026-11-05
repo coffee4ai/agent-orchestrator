@@ -30,6 +30,18 @@ const (
 	EventPRReviewThreadResolved EventType = "pr_review_thread_resolved"
 	EventReviewRunCreated       EventType = "review_run_created"
 	EventReviewRunUpdated       EventType = "review_run_updated"
+
+	// Fork (Nuvola) tables. One change_log rebuild admits all of them; later
+	// fork migrations add only the triggers that write these types.
+	EventPermissionEventRecorded EventType = "permission_event_recorded"
+	EventDecisionUpdated         EventType = "decision_updated"
+	EventPlanUpdated             EventType = "plan_updated"
+	EventTaskUpdated             EventType = "task_updated"
+	EventTaskRoundUpdated        EventType = "task_round_updated"
+	EventLockUpdated             EventType = "lock_updated"
+	EventHandoffUpdated          EventType = "handoff_updated"
+	EventSendDeliveryUpdated     EventType = "send_delivery_updated"
+	EventReportUpdated           EventType = "report_updated"
 )
 
 // Event is one CDC change read from change_log. Seq is the monotonic ordering +
