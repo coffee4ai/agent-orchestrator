@@ -214,3 +214,20 @@ func TestComputerUseNeedsCuaDriverToTurnOn(t *testing.T) {
 		t.Fatalf("disable after Cua Driver was removed: snapshot=%+v err=%v", snapshot, err)
 	}
 }
+
+func TestChatHibernationDefaultFromConfig(t *testing.T) {
+	ctx := context.Background()
+	svc := New(&hibernationSettingsStore{}, nil, Offering{}, nil)
+	svc.SetChatHibernationDefault(true)
+	if !svc.ChatHibernationEnabled() {
+		t.Fatal("service did not start with the configured default")
+	}
+	snapshot, err := svc.Get(ctx)
+	if err != nil || !snapshot.ChatHibernationEnabled {
+		t.Fatalf("snapshot = %+v, err = %v; want enabled", snapshot, err)
+	}
+	// Developer Mode (the settings route) can still turn it off at runtime.
+	if _, err := svc.SetChatHibernationEnabled(ctx, false); err != nil || svc.ChatHibernationEnabled() {
+		t.Fatalf("disable at runtime: err=%v enabled=%v", err, svc.ChatHibernationEnabled())
+	}
+}

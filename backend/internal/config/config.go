@@ -176,6 +176,10 @@ type Config struct {
 	// and the user confirms. AO_UPDATE_WHILE_RUNNING=off makes every update
 	// wait for those sessions to end again.
 	UpdateWhileRunning bool
+	// ChatHibernation is the daemon's initial chat hibernation gate, from
+	// AO_CHAT_HIBERNATION. The fork defaults it on; the active orchestrator is
+	// never a hibernation candidate regardless.
+	ChatHibernation bool
 	// VersionRefresh lets idle open sessions move to a harness release an
 	// update installed while they ran. AO_VERSION_REFRESH=off is the kill
 	// switch; the user's Settings toggle applies on top of it.
@@ -257,6 +261,7 @@ func (c Config) Addr() string {
 //	AO_TELEMETRY_EVENTS  local event capture off|on (default off)
 //	AO_TELEMETRY_METRICS local metric capture off|on (default off)
 //	AO_TELEMETRY_REMOTE  remote exporter off|posthog (default off)
+//	AO_CHAT_HIBERNATION  chat hibernation on|off (default on in the fork)
 //	AO_TELEMETRY_POSTHOG_KEY   PostHog project key
 //	AO_TELEMETRY_POSTHOG_HOST  PostHog host (default DefaultTelemetryPostHogHost)
 //	AO_TELEMETRY_RETENTION     local event retention (Go duration or days, default 30 days, min 1 day)
@@ -283,6 +288,7 @@ func Load() (Config, error) {
 			PostHogHost: DefaultTelemetryPostHogHost,
 		},
 		LocalOffering:          true,
+		ChatHibernation:        true,
 		HarnessUpdateChecks:    true,
 		HarnessUpdateInterval:  DefaultHarnessUpdateInterval,
 		UpdateWhileRunning:     true,
@@ -352,6 +358,13 @@ func Load() (Config, error) {
 		cfg.AllowedOrigins = origins
 	}
 
+	if raw, present := os.LookupEnv("AO_CHAT_HIBERNATION"); present && strings.TrimSpace(raw) != "" {
+		v, err := parseToggleEnv("AO_CHAT_HIBERNATION", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.ChatHibernation = v
+	}
 	if raw, present := os.LookupEnv("AO_HARNESS_UPDATE_CHECKS"); present && strings.TrimSpace(raw) != "" {
 		v, err := parseToggleEnv("AO_HARNESS_UPDATE_CHECKS", raw)
 		if err != nil {

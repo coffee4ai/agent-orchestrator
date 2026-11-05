@@ -518,32 +518,45 @@ describe("shell workspace startup", () => {
 		expect(shellMocks.navigate).toHaveBeenCalledWith({ to: "/" });
 	});
 
-	it("resyncs Developer Mode when an attached daemon restarts on the same port", async () => {
-		useUiStore.setState({ developerMode: true });
+	it("shell does not PATCH chat-hibernation on daemon ready", async () => {
+		useUiStore.setState({ developerMode: false });
 		shellMocks.state.daemonStatus = { state: "ready", port: 4777, pid: 101 };
 		const view = await renderShell();
-		await waitFor(() => expect(apiClient.PATCH).toHaveBeenCalledTimes(1));
-		expect(apiClient.PATCH).toHaveBeenCalledWith("/api/v1/settings/chat-hibernation", {
-			body: { enabled: true },
+		await act(async () => {
+			await Promise.resolve();
 		});
+		expect(apiClient.PATCH).not.toHaveBeenCalled();
 
+		// A daemon restart on the same port is another ready, not a user change.
 		shellMocks.state.daemonStatus = { state: "ready", port: 4777, pid: 202 };
 		view.rerender(
 			<Suspense fallback={null}>
 				<ShellRoute />
 			</Suspense>,
 		);
-
-		await waitFor(() => expect(apiClient.PATCH).toHaveBeenCalledTimes(2));
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(apiClient.PATCH).not.toHaveBeenCalled();
 	});
 
-	it("keeps chat hibernation disabled when Developer Mode is off", async () => {
+	it("PATCHes chat-hibernation only when the user changes Developer Mode", async () => {
+		useUiStore.setState({ developerMode: false });
 		shellMocks.state.daemonStatus = { state: "ready", port: 4777, pid: 101 };
 		await renderShell();
+		expect(apiClient.PATCH).not.toHaveBeenCalled();
 
-		await waitFor(() => expect(apiClient.PATCH).toHaveBeenCalledWith("/api/v1/settings/chat-hibernation", {
+		act(() => useUiStore.setState({ developerMode: true }));
+		await waitFor(() => expect(apiClient.PATCH).toHaveBeenCalledTimes(1));
+		expect(apiClient.PATCH).toHaveBeenCalledWith("/api/v1/settings/chat-hibernation", {
+			body: { enabled: true },
+		});
+
+		act(() => useUiStore.setState({ developerMode: false }));
+		await waitFor(() => expect(apiClient.PATCH).toHaveBeenCalledTimes(2));
+		expect(apiClient.PATCH).toHaveBeenLastCalledWith("/api/v1/settings/chat-hibernation", {
 			body: { enabled: false },
-		}));
+		});
 	});
 
 	it("routes duplicate-path project adds to the registered project and shows a toast", async () => {
