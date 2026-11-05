@@ -1234,3 +1234,63 @@ func TestSpawnRepoFlag(t *testing.T) {
 		})
 	}
 }
+
+// TestSpawnRoleFlag asserts `ao spawn --role` forwards one of the four roles,
+// omits the field when unset (the daemon defaults it by kind), and refuses any
+// other value as a usage error that lists the four.
+func TestSpawnRoleFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		wantRole  any
+		wantUsage string
+	}{
+		{name: "writer", args: []string{"--role", "writer"}, wantRole: "writer"},
+		{name: "controller", args: []string{"--role", "controller"}, wantRole: "controller"},
+		{name: "reviewer", args: []string{"--role", "reviewer"}, wantRole: "reviewer"},
+		{name: "orchestrator", args: []string{"--kind", "orchestrator", "--role", "orchestrator"}, wantRole: "orchestrator"},
+		{name: "omitted", args: nil, wantRole: nil},
+		{name: "unknown", args: []string{"--role", "x"}, wantUsage: `--role must be one of orchestrator, controller, writer, reviewer`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var req map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+					_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo"}}`)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure":
+					_, _ = io.WriteString(w, authorizedAgentsJSON("codex"))
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatal(err)
+					}
+					_, _ = io.WriteString(w, `{"session":{"id":"demo-21","status":"idle"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+
+			args := append([]string{"spawn", "--agent", "codex", "--name", "worker", "--project", "demo"}, tc.args...)
+			_, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, args...)
+			if tc.wantUsage != "" {
+				if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), tc.wantUsage) {
+					t.Fatalf("err=%v exit=%d, want usage error %q", err, ExitCode(err), tc.wantUsage)
+				}
+				if req != nil {
+					t.Fatalf("usage error still posted a spawn: %#v", req)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("spawn failed: %v stderr=%s", err, errOut)
+			}
+			if got := req["role"]; got != tc.wantRole {
+				t.Fatalf("role = %#v, want %#v; request=%#v", got, tc.wantRole, req)
+			}
+		})
+	}
+}

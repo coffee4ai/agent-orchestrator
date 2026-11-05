@@ -29,7 +29,7 @@ func TestBuildSystemPromptComputerUseFollowsSetting(t *testing.T) {
 	}
 
 	unwired := newManager()
-	sp, err := unwired.buildSystemPrompt(ctx, domain.KindWorker, "mer", "mer-1", "", true)
+	sp, err := unwired.buildSystemPrompt(ctx, domain.KindWorker, "", "mer", "mer-1", "", true)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestBuildSystemPromptComputerUseFollowsSetting(t *testing.T) {
 	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
 		for _, chat := range []bool{false, true} {
 			enabled = false
-			sp, err = m.buildSystemPrompt(ctx, kind, "mer", "mer-1", "", chat)
+			sp, err = m.buildSystemPrompt(ctx, kind, "", "mer", "mer-1", "", chat)
 			if err != nil {
 				t.Fatalf("buildSystemPrompt(%s, chat=%v): %v", kind, chat, err)
 			}
@@ -52,7 +52,7 @@ func TestBuildSystemPromptComputerUseFollowsSetting(t *testing.T) {
 			}
 
 			enabled = true
-			sp, err = m.buildSystemPrompt(ctx, kind, "mer", "mer-1", "", chat)
+			sp, err = m.buildSystemPrompt(ctx, kind, "", "mer", "mer-1", "", chat)
 			if err != nil {
 				t.Fatalf("buildSystemPrompt(%s, chat=%v): %v", kind, chat, err)
 			}

@@ -91,6 +91,9 @@ type SpawnConfig struct {
 	// domain.RootWorkspaceRepoName (the root alone), or domain.WorkspaceRepoNameAll /
 	// empty (the root with every child nested in it). It is stored verbatim.
 	RepoName string
+	// Role is what the session may do. Empty defaults by kind (writer for a
+	// worker, orchestrator for an orchestrator) in the session service.
+	Role domain.SessionRole
 	// TaskPreparation is the opaque speculative-worktree token returned while
 	// the desktop's New Task dialog is open. It is a hint: an absent or expired
 	// token falls back to ordinary workspace creation.

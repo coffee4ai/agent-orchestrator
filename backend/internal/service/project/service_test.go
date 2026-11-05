@@ -2563,3 +2563,93 @@ func TestManager_AddFirstForInstallFalseForUpgradeWithOnlyArchivedProjects(t *te
 		t.Fatal("marker not claimed")
 	}
 }
+
+// TestManager_SetConfigReadsPermissionsFile asserts set-config's
+// permissionsFile is read from the project root and stored under
+// permissionsAllow[permissionsRepo] (default __root__), that strictRoles and
+// permissionsAllow survive a later set-config that omits them, and that a
+// malformed or escaping file is a 422.
+func TestManager_SetConfigReadsPermissionsFile(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := project.NewWithDeps(project.Deps{Store: store})
+	root := gitRepo(t)
+	if _, err := m.Add(ctx, project.AddInput{Path: root, ProjectID: ptr("ws")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("api.json", `{"writer":["Bash(go test:*)"],"controller":["Bash(gh pr create:*)"]}`)
+	write("root.json", `{"writer":["Bash(make:*)"]}`)
+	write("bad.json", `{"writer":"Bash(go test:*)"}`)
+	write("role.json", `{"admin":["Bash(ls:*)"]}`)
+
+	strict := false
+	if _, err := m.SetConfig(ctx, "ws", project.SetConfigInput{
+		Config:          domain.ProjectConfig{StrictRoles: &strict, ControllerRulesFile: "docs/controller.md"},
+		PermissionsFile: "api.json",
+		PermissionsRepo: "api",
+	}); err != nil {
+		t.Fatalf("SetConfig api: %v", err)
+	}
+	proj, err := m.SetConfig(ctx, "ws", project.SetConfigInput{PermissionsFile: "root.json"})
+	if err != nil {
+		t.Fatalf("SetConfig root: %v", err)
+	}
+	want := map[string]map[string][]string{
+		"api":                        {"writer": {"Bash(go test:*)"}, "controller": {"Bash(gh pr create:*)"}},
+		domain.RootWorkspaceRepoName: {"writer": {"Bash(make:*)"}},
+	}
+	if proj.Config == nil || !reflect.DeepEqual(proj.Config.PermissionsAllow, want) {
+		t.Fatalf("permissionsAllow = %#v, want %#v", proj.Config, want)
+	}
+	if proj.Config.StrictRoles == nil || *proj.Config.StrictRoles {
+		t.Fatalf("strictRoles = %v, want the stored false kept", proj.Config.StrictRoles)
+	}
+	if proj.Config.ControllerRulesFile != "" {
+		t.Fatalf("controllerRulesFile = %q, want replaced like every other field", proj.Config.ControllerRulesFile)
+	}
+
+	for _, tc := range []struct{ file, repo string }{
+		{file: "bad.json"}, {file: "role.json"}, {file: "missing.json"}, {file: "../api.json"}, {file: "/etc/hosts"}, {file: "api.json", repo: " "},
+	} {
+		_, err := m.SetConfig(ctx, "ws", project.SetConfigInput{PermissionsFile: tc.file, PermissionsRepo: tc.repo})
+		var apiErr *apierr.Error
+		if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindUnprocessable || apiErr.Code != "INVALID_PERMISSIONS_FILE" {
+			t.Fatalf("SetConfig %q repo %q: err = %#v, want a 422 INVALID_PERMISSIONS_FILE", tc.file, tc.repo, err)
+		}
+	}
+}
+
+// TestManager_UpdateSettingsKeepsStoredRoleConfig asserts the desktop's
+// settings save, which does not carry strictRoles or permissionsAllow, keeps
+// the stored values.
+func TestManager_UpdateSettingsKeepsStoredRoleConfig(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := project.NewWithDeps(project.Deps{Store: store})
+	strict := true
+	allow := map[string]map[string][]string{domain.RootWorkspaceRepoName: {"writer": {"Bash(make:*)"}}}
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ws"), Config: &domain.ProjectConfig{StrictRoles: &strict, PermissionsAllow: allow}}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	proj, err := m.UpdateSettings(ctx, "ws", project.UpdateSettingsInput{DisplayName: "WS", Config: domain.ProjectConfig{AgentRules: "be terse"}})
+	if err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	if proj.Config == nil || proj.Config.StrictRoles == nil || !*proj.Config.StrictRoles || !reflect.DeepEqual(proj.Config.PermissionsAllow, allow) || proj.Config.AgentRules != "be terse" {
+		t.Fatalf("config = %#v, want strictRoles and permissionsAllow kept beside the new rules", proj.Config)
+	}
+}

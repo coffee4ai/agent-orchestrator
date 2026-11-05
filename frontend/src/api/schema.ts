@@ -5526,6 +5526,7 @@ export interface components {
             reviewerConfig?: components["schemas"]["AgentConfig"];
             /** @enum {string} */
             reviewerHarness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "opencode-v2" | "kiro" | "pi" | "agy" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
+            role?: string;
             /** @enum {string} */
             scmStatus?: "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "commented" | "approved" | "mergeable" | "merged";
             staleBinary?: components["schemas"]["SessionStaleBinary"];
@@ -6594,6 +6595,8 @@ export interface components {
             autoReview?: boolean;
             canonicalRepoURL?: string;
             containerReap?: components["schemas"]["ContainerReapConfig"];
+            controllerRules?: string;
+            controllerRulesFile?: string;
             defaultBranch?: string;
             env?: {
                 [key: string]: string;
@@ -6601,10 +6604,16 @@ export interface components {
             orchestrator?: components["schemas"]["RoleOverride"];
             orchestratorRules?: string;
             orchestratorRulesFile?: string;
+            permissionsAllow?: {
+                [key: string]: {
+                    [key: string]: string[];
+                };
+            };
             postCreate?: string[];
             preRemove?: string[];
             reviewers?: components["schemas"]["DomainReviewerConfig"][];
             sessionPrefix?: string;
+            strictRoles?: null | boolean;
             symlinks?: string[];
             trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
             worker?: components["schemas"]["RoleOverride"];
@@ -7284,6 +7293,8 @@ export interface components {
         };
         SetProjectConfigInput: {
             config: components["schemas"]["ProjectConfig"];
+            permissionsFile?: string;
+            permissionsRepo?: string;
         };
         SetProjectPermissionsInput: {
             /** @enum {string} */
@@ -7584,6 +7595,8 @@ export interface components {
             repoName?: string;
             /** @enum {string} */
             requestedOutput?: "artifact";
+            /** @enum {string} */
+            role?: "orchestrator" | "controller" | "writer" | "reviewer";
             /** @enum {string} */
             trackerProvider?: "github" | "gitlab";
         };
@@ -14131,6 +14144,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

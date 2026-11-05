@@ -6487,7 +6487,7 @@ func TestSystemPrompt_AppendsConfidentialityGuard(t *testing.T) {
 			lookPath := func(string) (string, error) { return "/bin/true", nil }
 			m := New(Deps{Runtime: &fakeRuntime{}, Agents: singleAgent{agent: &recordingAgent{}}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
 
-			sp, err := m.buildSystemPrompt(ctx, tc.kind, "mer", "mer-1", "", false)
+			sp, err := m.buildSystemPrompt(ctx, tc.kind, "", "mer", "mer-1", "", false)
 			if err != nil {
 				t.Fatalf("buildSystemPrompt: %v", err)
 			}
@@ -6539,7 +6539,7 @@ func TestSystemPrompt_AppendsArtifactGuidance(t *testing.T) {
 		LookPath:  lookPath,
 	})
 
-	sp, err := m.buildSystemPrompt(ctx, domain.KindWorker, "mer", "mer-7", "", false)
+	sp, err := m.buildSystemPrompt(ctx, domain.KindWorker, "", "mer", "mer-7", "", false)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
 	}
@@ -6569,7 +6569,7 @@ func TestSystemPrompt_AppendsArtifactGuidance(t *testing.T) {
 	if strings.Contains(sp, "html_render") {
 		t.Fatalf("terminal session prompt names html_render:\n%s", sp)
 	}
-	chatPrompt, err := m.buildSystemPrompt(ctx, domain.KindWorker, "mer", "mer-7", "", true)
+	chatPrompt, err := m.buildSystemPrompt(ctx, domain.KindWorker, "", "mer", "mer-7", "", true)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt chat: %v", err)
 	}
@@ -6600,7 +6600,7 @@ func TestSystemPrompt_ArtifactRequestedOutput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sp, err := m.buildSystemPrompt(ctx, tc.kind, tc.projectID, "mer-7", tc.requestedOutput, tc.chat)
+			sp, err := m.buildSystemPrompt(ctx, tc.kind, "", tc.projectID, "mer-7", tc.requestedOutput, tc.chat)
 			if err != nil {
 				t.Fatalf("buildSystemPrompt: %v", err)
 			}
@@ -6627,7 +6627,7 @@ func TestSystemPrompt_ArtifactRequestedOutputWithoutArtifactDir(t *testing.T) {
 	// No DataDir: artifactPrompt has no directory to name.
 	m := New(Deps{Runtime: &fakeRuntime{}, Agents: singleAgent{agent: &recordingAgent{}}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
 
-	sp, err := m.buildSystemPrompt(ctx, domain.KindWorker, "mer", "mer-7", domain.RequestedOutputArtifact, false)
+	sp, err := m.buildSystemPrompt(ctx, domain.KindWorker, "", "mer", "mer-7", domain.RequestedOutputArtifact, false)
 	if err != nil {
 		t.Fatalf("buildSystemPrompt: %v", err)
 	}
@@ -12425,5 +12425,201 @@ func TestRestoreSessionWorkspaceKeepsRepoNameLayout(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].RepoName != domain.RootWorkspaceRepoName {
 		t.Fatalf("root-only restore rows = %#v, want the root alone", rows)
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+// roleProjectConfig is a project whose workers run codex in accept-edits mode
+// (allowed for every role), with an allow list for root writers and
+// controllers.
+func roleProjectConfig(strict bool) domain.ProjectConfig {
+	return domain.ProjectConfig{
+		Worker:       domain.RoleOverride{Harness: domain.HarnessCodex},
+		Orchestrator: domain.RoleOverride{Harness: domain.HarnessCodex},
+		AgentConfig:  domain.AgentConfig{Permissions: domain.PermissionModeAcceptEdits},
+		StrictRoles:  boolPtr(strict),
+		PermissionsAllow: map[string]map[string][]string{
+			domain.RootWorkspaceRepoName: {
+				string(domain.SessionRoleWriter):     {"Bash(go test:*)"},
+				string(domain.SessionRoleController): {"Bash(gh pr create:*)"},
+			},
+			"api": {string(domain.SessionRoleWriter): {"Bash(make api:*)"}},
+		},
+	}
+}
+
+func newRoleManager(cfg domain.ProjectConfig) (*Manager, *fakeStore, *fakeRuntime, *hookRecordingAgent) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: cfg}
+	agent := &hookRecordingAgent{}
+	rt := &fakeRuntime{}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{Runtime: rt, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st, Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, LookPath: lookPath})
+	return m, st, rt, agent
+}
+
+// TestPrepareWorkspacePassesRoleAndAllowlist asserts a spawn hands the agent's
+// hook install the session's role, the role's deny list under strictRoles
+// (none when strictRoles is off) and the project's allow list for the
+// session's repository and role.
+func TestPrepareWorkspacePassesRoleAndAllowlist(t *testing.T) {
+	cases := []struct {
+		name      string
+		strict    bool
+		role      domain.SessionRole
+		wantRole  domain.SessionRole
+		wantDeny  []string
+		wantAllow []string
+	}{
+		{name: "strict writer", strict: true, role: domain.SessionRoleWriter, wantRole: domain.SessionRoleWriter,
+			wantDeny: claudecode.DenyRulesFor(domain.SessionRoleWriter), wantAllow: []string{"Bash(go test:*)"}},
+		{name: "strict controller", strict: true, role: domain.SessionRoleController, wantRole: domain.SessionRoleController,
+			wantDeny: claudecode.DenyRulesFor(domain.SessionRoleController), wantAllow: []string{"Bash(gh pr create:*)"}},
+		{name: "strict default role", strict: true, wantRole: domain.SessionRoleWriter,
+			wantDeny: claudecode.DenyRulesFor(domain.SessionRoleWriter), wantAllow: []string{"Bash(go test:*)"}},
+		{name: "relaxed writer", strict: false, role: domain.SessionRoleWriter, wantRole: domain.SessionRoleWriter,
+			wantAllow: []string{"Bash(go test:*)"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _, agent := newRoleManager(roleProjectConfig(tc.strict))
+			rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Role: tc.role})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(agent.hookCalls) != 1 {
+				t.Fatalf("hook installs = %d, want 1", len(agent.hookCalls))
+			}
+			got := agent.hookCalls[0]
+			if got.Role != tc.wantRole || !reflect.DeepEqual(got.PermissionsDeny, tc.wantDeny) || !reflect.DeepEqual(got.PermissionsAllow, tc.wantAllow) {
+				t.Fatalf("hook config role=%q deny=%#v allow=%#v, want role=%q deny=%#v allow=%#v",
+					got.Role, got.PermissionsDeny, got.PermissionsAllow, tc.wantRole, tc.wantDeny, tc.wantAllow)
+			}
+			if stored := st.sessions[rec.ID].Role; stored != tc.wantRole {
+				t.Fatalf("stored role = %q, want %q", stored, tc.wantRole)
+			}
+		})
+	}
+}
+
+// TestRestorePassesRoleFromSessionRow asserts a restore installs hooks with
+// the role and repository stored on the session row.
+func TestRestorePassesRoleFromSessionRow(t *testing.T) {
+	m, st, rt, agent := newRoleManager(roleProjectConfig(true))
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
+	rec := st.sessions["mer-1"]
+	rec.Kind = domain.KindWorker
+	rec.Harness = domain.HarnessCodex
+	rec.Role = domain.SessionRoleController
+	st.sessions["mer-1"] = rec
+	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
+		t.Fatalf("RestoreWithMode: %v", err)
+	}
+	if len(agent.hookCalls) == 0 {
+		t.Fatal("restore installed no hooks")
+	}
+	got := agent.hookCalls[len(agent.hookCalls)-1]
+	if got.Role != domain.SessionRoleController || !reflect.DeepEqual(got.PermissionsDeny, claudecode.DenyRulesFor(domain.SessionRoleController)) ||
+		!reflect.DeepEqual(got.PermissionsAllow, []string{"Bash(gh pr create:*)"}) {
+		t.Fatalf("restore hook config role=%q deny=%#v allow=%#v", got.Role, got.PermissionsDeny, got.PermissionsAllow)
+	}
+	if env := rt.lastCfg.Env[EnvRole]; env != string(domain.SessionRoleController) {
+		t.Fatalf("restored runtime env %s = %q, want controller", EnvRole, env)
+	}
+}
+
+// TestSpawnEnvCarriesRole asserts AO_ROLE is part of the AO-owned environment
+// a project cannot override, and reaches a spawned session's runtime.
+func TestSpawnEnvCarriesRole(t *testing.T) {
+	env := spawnEnvForOS("mer-1", "mer", "", "/data", map[string]string{"ao_role": "orchestrator"}, true, domain.SessionRoleWriter)
+	if env[EnvRole] != string(domain.SessionRoleWriter) || env["ao_role"] != "" {
+		t.Fatalf("env = %#v, want %s=writer with the folded project key dropped", env, EnvRole)
+	}
+	m, _, rt, _ := newRoleManager(roleProjectConfig(false))
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Role: domain.SessionRoleController}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.lastCfg.Env[EnvRole]; got != string(domain.SessionRoleController) {
+		t.Fatalf("runtime env %s = %q, want controller", EnvRole, got)
+	}
+}
+
+// TestRulesFileChosenByRole asserts a controller's standing instructions come
+// from the controller rules, a writer's from the worker rules.
+func TestRulesFileChosenByRole(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "worker.md"), []byte("WORKER-RULES-FILE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "controller.md"), []byte("CONTROLLER-RULES-FILE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := roleProjectConfig(true)
+	cfg.AgentRules = "WORKER-RULES"
+	cfg.AgentRulesFile = "worker.md"
+	cfg.ControllerRules = "CONTROLLER-RULES"
+	cfg.ControllerRulesFile = "controller.md"
+	m, st, _, _ := newRoleManager(cfg)
+	project := st.projects["mer"]
+	project.Path = dir
+	st.projects["mer"] = project
+
+	cases := map[domain.SessionRole]struct{ want, notWant string }{
+		domain.SessionRoleController: {want: "CONTROLLER-RULES-FILE", notWant: "WORKER-RULES"},
+		domain.SessionRoleWriter:     {want: "WORKER-RULES-FILE", notWant: "CONTROLLER-RULES"},
+	}
+	for role, tc := range cases {
+		sp, err := m.buildSystemPrompt(ctx, domain.KindWorker, role, "mer", "mer-1", "", false)
+		if err != nil {
+			t.Fatalf("buildSystemPrompt(%s): %v", role, err)
+		}
+		if !strings.Contains(sp, tc.want) || strings.Contains(sp, tc.notWant) {
+			t.Fatalf("%s system prompt: want %q and not %q:\n%s", role, tc.want, tc.notWant, sp)
+		}
+	}
+}
+
+// TestSpawnRefusesAutoAndBypassForWritersAndControllers asserts that under
+// strictRoles a writer or controller whose resolved permission mode is auto or
+// bypass-permissions is refused before anything durable exists, and that the
+// orchestrator, the reviewer and a project without strictRoles are not.
+func TestSpawnRefusesAutoAndBypassForWritersAndControllers(t *testing.T) {
+	modes := []domain.PermissionMode{domain.PermissionModeAuto, domain.PermissionModeBypassPermissions, domain.PermissionModeAcceptEdits, domain.PermissionModeDefault}
+	roles := []domain.SessionRole{domain.SessionRoleWriter, domain.SessionRoleController, domain.SessionRoleOrchestrator, domain.SessionRoleReviewer}
+	for _, strict := range []bool{true, false} {
+		for _, role := range roles {
+			for _, mode := range modes {
+				name := fmt.Sprintf("strict=%v/%s/%s", strict, role, mode)
+				t.Run(name, func(t *testing.T) {
+					m, st, _, _ := newRoleManager(roleProjectConfig(strict))
+					kind := domain.KindWorker
+					if role == domain.SessionRoleOrchestrator {
+						kind = domain.KindOrchestrator
+					}
+					_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: kind, Role: role, AgentConfig: ports.AgentConfig{Permissions: mode}})
+					refused := strict && (role == domain.SessionRoleWriter || role == domain.SessionRoleController) &&
+						(mode == domain.PermissionModeAuto || mode == domain.PermissionModeBypassPermissions)
+					if refused {
+						if !errors.Is(err, ErrPermissionModeNotAllowedForRole) {
+							t.Fatalf("err = %v, want ErrPermissionModeNotAllowedForRole", err)
+						}
+						if len(st.sessions) != 0 {
+							t.Fatalf("refused spawn left sessions %#v", st.sessions)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("spawn: %v", err)
+					}
+				})
+			}
+		}
+	}
+	// The default permission mode resolves to auto, so a strict writer that
+	// names no mode is refused too.
+	m, _, _, _ := newRoleManager(domain.ProjectConfig{Worker: domain.RoleOverride{Harness: domain.HarnessCodex}, StrictRoles: boolPtr(true)})
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); !errors.Is(err, ErrPermissionModeNotAllowedForRole) {
+		t.Fatalf("strict writer with the default (auto) mode: err = %v, want ErrPermissionModeNotAllowedForRole", err)
 	}
 }

@@ -30,6 +30,10 @@ const (
 	// caller should retry (for example, a temporarily busy database); it maps to
 	// 503 rather than reporting the contention as an internal server fault.
 	KindUnavailable
+	// KindUnprocessable is well-formed input the service refuses on its
+	// meaning (an unknown value, a combination a policy forbids); it maps to
+	// 422.
+	KindUnprocessable
 )
 
 // Error is the structured error every service returns. Code is a stable machine
@@ -88,6 +92,11 @@ func NotImplemented(code, message string) *Error {
 // Unavailable is a 503-class transient local capability failure.
 func Unavailable(code, message string) *Error {
 	return New(KindUnavailable, code, message, nil)
+}
+
+// Unprocessable is a 422-class error.
+func Unprocessable(code, message string, details map[string]any) *Error {
+	return New(KindUnprocessable, code, message, details)
 }
 
 // Internal is a 500-class error.

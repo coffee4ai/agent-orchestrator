@@ -135,7 +135,7 @@ func (m *Manager) runRecordBackgroundTask(ctx context.Context, rec domain.Sessio
 	config := ports.AgentConfig{
 		Model: rec.Metadata.Model, Effort: rec.Metadata.Effort, Permissions: backgroundTaskPermissions(rec.Harness),
 	}
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, nil)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, nil, rec.Role)
 	if m.agents != nil {
 		if agent, found := m.agents.Agent(rec.Harness); found {
 			m.augmentAgentRuntimeEnv(agent, env)
@@ -226,7 +226,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	}
 	// Chat Service retains this unprivileged base environment. The bearer is
 	// minted inside its per-session launch gate and is never cached for reuse.
-	env := m.runtimeEnv(id, in.record.ProjectID, in.record.IssueID, in.project.Config.Env)
+	env := m.runtimeEnv(id, in.record.ProjectID, in.record.IssueID, in.project.Config.Env, in.record.Role)
 	if agent, ok := m.agents.Agent(in.cfg.Harness); ok {
 		m.augmentAgentRuntimeEnv(agent, env)
 		// Chat launches go through the same workspace preparation as terminal
@@ -234,7 +234,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		// SessionStart hook, which injects the standing instructions from the
 		// prompt file) a fresh chat session would start with no AO role or
 		// coordination context.
-		if err := m.prepareWorkspace(ctx, agent, id, in.workspace.Path, in.systemPrompt, in.systemPromptFile, agentConfig, env); err != nil {
+		if err := m.prepareWorkspace(ctx, agent, id, in.workspace.Path, in.systemPrompt, in.systemPromptFile, agentConfig, env, in.record.Role, in.record.RepoName, in.project.Config); err != nil {
 			m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false, in.promptQueued)
 			return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnPrepare, err)
 		}
@@ -496,7 +496,7 @@ func (m *Manager) resumeChatController(
 
 	// Recomputed rather than persisted, matching the terminal path: a restored
 	// session keeps its standing instructions across the relaunch.
-	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.ProjectID, rec.ID, rec.RequestedOutput, true)
+	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.Role, rec.ProjectID, rec.ID, rec.RequestedOutput, true)
 	if err != nil {
 		return RestoreResult{}, relaunchFailed("system prompt", fmt.Errorf("%s %s: system prompt: %w", operation, rec.ID, err))
 	}
@@ -505,7 +505,7 @@ func (m *Manager) resumeChatController(
 	if err != nil {
 		return RestoreResult{}, relaunchFailed("workspace roots", fmt.Errorf("%s %s: workspace roots: %w", operation, rec.ID, err))
 	}
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Role)
 	if agent, ok := m.agents.Agent(rec.Harness); ok {
 		m.augmentAgentRuntimeEnv(agent, env)
 	}

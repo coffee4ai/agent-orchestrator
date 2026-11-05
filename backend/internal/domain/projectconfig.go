@@ -51,6 +51,22 @@ type ProjectConfig struct {
 	// OrchestratorRulesFile is a repo-relative Markdown/text file whose contents
 	// are appended to OrchestratorRules for orchestrator sessions.
 	OrchestratorRulesFile string `json:"orchestratorRulesFile,omitempty"`
+	// ControllerRules are project-specific standing instructions for sessions
+	// in the controller role, in place of AgentRules.
+	ControllerRules string `json:"controllerRules,omitempty"`
+	// ControllerRulesFile is a repo-relative Markdown/text file whose contents
+	// are appended to ControllerRules for controller sessions.
+	ControllerRulesFile string `json:"controllerRulesFile,omitempty"`
+
+	// StrictRoles turns on role enforcement: each session's settings file
+	// carries its role's deny rules, and a writer or controller cannot run in
+	// the auto or bypass-permissions mode. Nil means off (the upstream
+	// default); the fork's `ao project add` sets it on.
+	StrictRoles *bool `json:"strictRoles,omitempty"`
+	// PermissionsAllow are extra allow rules written into a session's settings
+	// file, keyed by the session's repo name (a workspace child's name,
+	// RootWorkspaceRepoName for the root) and then by role.
+	PermissionsAllow map[string]map[string][]string `json:"permissionsAllow,omitempty"`
 
 	// AgentConfig is the default agent config for the project.
 	AgentConfig AgentConfig `json:"agentConfig,omitempty"`
@@ -267,6 +283,12 @@ func (c ProjectConfig) Validate() error {
 	if err := validateRepoRelative(c.OrchestratorRulesFile); err != nil {
 		return fmt.Errorf("orchestratorRulesFile %q: %w", c.OrchestratorRulesFile, err)
 	}
+	if err := validateRepoRelative(c.ControllerRulesFile); err != nil {
+		return fmt.Errorf("controllerRulesFile %q: %w", c.ControllerRulesFile, err)
+	}
+	if err := ValidatePermissionsAllow(c.PermissionsAllow); err != nil {
+		return err
+	}
 	for i, rv := range c.Reviewers {
 		if !rv.Harness.IsKnown() {
 			return fmt.Errorf("reviewers[%d].harness: unknown harness %q", i, rv.Harness)
@@ -277,6 +299,42 @@ func (c ProjectConfig) Validate() error {
 	}
 	if err := c.TrackerIntake.Validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+// StrictRolesEnabled reports whether the project enforces session roles.
+func (c ProjectConfig) StrictRolesEnabled() bool {
+	return c.StrictRoles != nil && *c.StrictRoles
+}
+
+// AllowRulesFor returns the configured allow rules for a session of role on
+// repoName; an empty repoName (a single-repository project, or a workspace
+// session on everything) reads the root's entry.
+func (c ProjectConfig) AllowRulesFor(repoName string, role SessionRole) []string {
+	if repoName == "" || repoName == WorkspaceRepoNameAll {
+		repoName = RootWorkspaceRepoName
+	}
+	return c.PermissionsAllow[repoName][string(role)]
+}
+
+// ValidatePermissionsAllow checks a permissionsAllow map: every inner key is a
+// session role and every rule is a non-blank string.
+func ValidatePermissionsAllow(allow map[string]map[string][]string) error {
+	for repo, byRole := range allow {
+		if strings.TrimSpace(repo) == "" {
+			return fmt.Errorf("permissionsAllow: repository name must not be empty")
+		}
+		for role, rules := range byRole {
+			if !SessionRole(role).Valid() {
+				return fmt.Errorf("permissionsAllow[%q]: unknown role %q", repo, role)
+			}
+			for _, rule := range rules {
+				if strings.TrimSpace(rule) == "" {
+					return fmt.Errorf("permissionsAllow[%q][%q]: rule must not be empty", repo, role)
+				}
+			}
+		}
 	}
 	return nil
 }

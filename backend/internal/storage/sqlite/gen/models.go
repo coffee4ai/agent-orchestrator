@@ -742,6 +742,7 @@ type Session struct {
 	BranchNaming                     bool
 	TemporaryBranch                  string
 	RepoName                         string
+	Role                             string
 }
 
 type SessionAgentAccount struct {

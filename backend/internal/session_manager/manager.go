@@ -190,6 +190,9 @@ const (
 	EnvSessionID = "AO_SESSION_ID"
 	EnvProjectID = "AO_PROJECT_ID"
 	EnvIssueID   = "AO_ISSUE_ID"
+	// EnvRole is the session's role (orchestrator, controller, writer or
+	// reviewer), so the session's own `ao` calls can say who is asking.
+	EnvRole = "AO_ROLE"
 	// EnvRuntimeLaunchID identifies the current supervised agent generation.
 	EnvRuntimeLaunchID = "AO_RUNTIME_LAUNCH_ID"
 	// EnvSupervisedProcess tells terminal runtimes that the AO supervisor owns
@@ -1077,6 +1080,12 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
 	}
+	if cfg.Role == "" {
+		cfg.Role = domain.DefaultSessionRole(cfg.Kind)
+	}
+	if err := checkRolePermissionMode(project.Config, cfg.Role, agentConfig.Permissions); err != nil {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+	}
 	// Resolve the controller mode here, before anything durable is created, for
 	// the same reason an unknown harness is rejected above: an explicit Chat
 	// request AO cannot honor should cost nothing, not leave a terminated row and
@@ -1467,7 +1476,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, ports.ErrAgentAuthRequired)
 		}
 	}
-	if err := m.prepareWorkspace(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, adapterConfig, env); err != nil {
+	if err := m.prepareWorkspace(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, adapterConfig, env, rec.Role, rec.RepoName, project.Config); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false, false)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
 	}
@@ -3640,7 +3649,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if !ok {
 		return RestoreResult{}, relaunchFailed("agent adapter", fmt.Errorf("%s %s: no agent adapter for harness %q", operation, rec.ID, rec.Harness))
 	}
-	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.ProjectID, rec.ID, rec.RequestedOutput, false)
+	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.Role, rec.ProjectID, rec.ID, rec.RequestedOutput, false)
 	if err != nil {
 		return RestoreResult{}, relaunchFailed("system prompt", fmt.Errorf("%s %s: system prompt: %w", operation, rec.ID, err))
 	}
@@ -3688,7 +3697,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ports.ErrAgentAuthRequired)
 		}
 	}
-	if err := m.prepareWorkspace(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
+	if err := m.prepareWorkspace(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env, rec.Role, rec.RepoName, project.Config); err != nil {
 		return RestoreResult{}, relaunchFailed("agent hooks", fmt.Errorf("%s %s: %w", operation, rec.ID, err))
 	}
 	if requireNativeHistory && !forceFresh {
@@ -5813,6 +5822,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		Harness:           cfg.Harness,
 		DisplayName:       cfg.DisplayName,
 		RepoName:          cfg.RepoName,
+		Role:              cfg.Role,
 		Activity:          domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
 		// Resolved before this point and persisted here. There is no UPDATE
 		// statement that can change it afterwards.
@@ -6025,7 +6035,7 @@ func appendAttachmentReferences(prompt string, refs []string) string {
 // empty input box rather than receiving an auto-generated kickoff turn.
 func (m *Manager) buildSpawnTexts(ctx context.Context, cfg ports.SpawnConfig, sessionID domain.SessionID) (prompt, systemPrompt string, err error) {
 	prompt = buildPrompt(cfg)
-	systemPrompt, err = m.buildSystemPrompt(ctx, cfg.Kind, cfg.ProjectID, sessionID, cfg.RequestedOutput, domain.NormalizeSessionMode(cfg.RequestedMode) == domain.SessionModeChat)
+	systemPrompt, err = m.buildSystemPrompt(ctx, cfg.Kind, cfg.Role, cfg.ProjectID, sessionID, cfg.RequestedOutput, domain.NormalizeSessionMode(cfg.RequestedMode) == domain.SessionModeChat)
 	if err != nil {
 		return "", "", err
 	}
@@ -6039,7 +6049,7 @@ func (m *Manager) buildSpawnTexts(ctx context.Context, cfg ports.SpawnConfig, se
 // buildSystemPrompt assembles the standing instructions. chat says whether the
 // agent runs as a chat session, the only mode with the html tools and ao render.
 // requestedOutput is the deliverable requested at spawn.
-func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind, projectID domain.ProjectID, sessionID domain.SessionID, requestedOutput domain.RequestedOutput, chat bool) (string, error) {
+func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind, role domain.SessionRole, projectID domain.ProjectID, sessionID domain.SessionID, requestedOutput domain.RequestedOutput, chat bool) (string, error) {
 	project, err := m.loadProject(ctx, projectID)
 	if err != nil {
 		return "", err
@@ -6072,12 +6082,19 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 				cfg.OrchestratorSessionID = string(orchestratorID)
 			}
 		}
-		rules, err := buildProjectRules(projectRulesConfig{
+		rulesConfig := projectRulesConfig{
 			ProjectPath:    project.Path,
 			Rules:          project.Config.AgentRules,
 			RulesFile:      project.Config.AgentRulesFile,
 			RulesFileField: "agentRulesFile",
-		})
+		}
+		if role == domain.SessionRoleController {
+			// A controller follows its own standing rules, not the writers'.
+			rulesConfig.Rules = project.Config.ControllerRules
+			rulesConfig.RulesFile = project.Config.ControllerRulesFile
+			rulesConfig.RulesFileField = "controllerRulesFile"
+		}
+		rules, err := buildProjectRules(rulesConfig)
 		if err != nil {
 			return "", err
 		}
@@ -6339,11 +6356,11 @@ func workspaceRepoList(repos []domain.WorkspaceRepoRecord) string {
 // AO_SESSION_ID and friends).
 var envKeysCaseInsensitive = runtime.GOOS == "windows"
 
-func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string) map[string]string {
-	return spawnEnvForOS(id, project, issue, dataDir, projectEnv, envKeysCaseInsensitive)
+func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string, role domain.SessionRole) map[string]string {
+	return spawnEnvForOS(id, project, issue, dataDir, projectEnv, envKeysCaseInsensitive, role)
 }
 
-func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string, caseInsensitive bool) map[string]string {
+func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string, caseInsensitive bool, role domain.SessionRole) map[string]string {
 	env := agentlaunch.MergeEnv(projectEnv, nil)
 	setProtected := func(key, value string) {
 		if caseInsensitive {
@@ -6358,6 +6375,7 @@ func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.I
 	setProtected(EnvSessionID, string(id))
 	setProtected(EnvProjectID, string(project))
 	setProtected(EnvIssueID, string(issue))
+	setProtected(EnvRole, string(role))
 	setProtected(EnvDataDir, dataDir)
 	return env
 }
@@ -6369,8 +6387,8 @@ func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.I
 // command, which fails every callback and silently kills activity tracking).
 // When the pin cannot be applied the inherited PATH is kept and a warning is
 // logged so the degradation isn't silent.
-func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
-	env, err := m.runtimeEnvChecked(id, project, issue, projectEnv, m.accountOverride(id))
+func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, role domain.SessionRole) map[string]string {
+	env, err := m.runtimeEnvChecked(id, project, issue, projectEnv, m.accountOverride(id), role)
 	if err != nil {
 		m.logger.Warn("session agent account env incomplete", "session", id, "error", err)
 	}
@@ -6381,9 +6399,9 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 // environment could not be resolved, for callers that must not go on under
 // another login (an account move's preflight). A nonempty accountID replaces
 // the session's binding.
-func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string) (map[string]string, error) {
+func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string, role domain.SessionRole) (map[string]string, error) {
 	caseInsensitive := envKeysCaseInsensitive
-	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
+	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive, role)
 	// Project configuration must never redirect AO-owned hook callbacks to a
 	// different daemon. New receives the resolved absolute path in production;
 	// the environment fallback keeps focused embedders and tests compatible.
@@ -6508,8 +6526,8 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 	env[EnvPermissionMode] = string(ports.NormalizePermissionMode(mode))
 }
 
-func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, string, error) {
-	env := m.runtimeEnv(id, project, issue, projectEnv)
+func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, role domain.SessionRole) (map[string]string, string, error) {
+	env := m.runtimeEnv(id, project, issue, projectEnv, role)
 	if m.browserCapabilities == nil {
 		return env, "", nil
 	}
@@ -6532,7 +6550,7 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	rec domain.SessionRecord,
 	projectEnv map[string]string,
 ) (domain.SessionRecord, map[string]string, error) {
-	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv)
+	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Role)
 	if err != nil {
 		return rec, nil, err
 	}
@@ -6553,7 +6571,7 @@ func (m *Manager) prepareChatControllerEnv(
 	projectEnv map[string]string,
 	expected domain.SessionControllerOwner,
 ) (domain.SessionRecord, map[string]string, error) {
-	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv)
+	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv, rec.Role)
 	if err != nil {
 		return rec, nil, err
 	}
@@ -6829,9 +6847,11 @@ func (m *Manager) augmentAgentRuntimeEnv(agent ports.Agent, env map[string]strin
 
 // prepareWorkspace runs the per-session pre-launch steps before the runtime
 // starts the agent: installing the workspace-local activity hooks (so early
-// startup hooks can update the already-created session row), then any optional
-// PreLaunch step. Shared by Spawn and Restore.
-func (m *Manager) prepareWorkspace(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, env map[string]string) error {
+// startup hooks can update the already-created session row) with the
+// session's role and the permission rules resolved for it from the project
+// config, then any optional PreLaunch step. Shared by Spawn and Restore.
+func (m *Manager) prepareWorkspace(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, env map[string]string, role domain.SessionRole, repoName string, projectConfig domain.ProjectConfig) error {
+	deny, allow := rolePermissionRules(projectConfig, role, repoName)
 	if err := agent.GetAgentHooks(ctx, ports.WorkspaceHookConfig{
 		SessionID:        string(id),
 		WorkspacePath:    workspacePath,
@@ -6840,6 +6860,9 @@ func (m *Manager) prepareWorkspace(ctx context.Context, agent ports.Agent, id do
 		SystemPrompt:     systemPrompt,
 		SystemPromptFile: systemPromptFile,
 		Config:           agentConfig,
+		Role:             role,
+		PermissionsDeny:  deny,
+		PermissionsAllow: allow,
 	}); err != nil {
 		m.cleanupPreparedAgentWorkspace(ctx, agent, id, workspacePath, env)
 		return fmt.Errorf("install hooks: %w", err)
@@ -6908,9 +6931,9 @@ func (m *Manager) cleanupAgentWorkspace(ctx context.Context, rec domain.SessionR
 	if !cleansWorkspace {
 		return
 	}
-	env := spawnEnv(rec.ID, rec.ProjectID, rec.IssueID, m.dataDir, nil)
+	env := spawnEnv(rec.ID, rec.ProjectID, rec.IssueID, m.dataDir, nil, rec.Role)
 	if project, err := m.loadProject(ctx, rec.ProjectID); err == nil {
-		env = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+		env = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Role)
 	} else {
 		m.logger.Warn("workspace cleanup: project env unavailable; agent cleanup using AO env only",
 			"sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)

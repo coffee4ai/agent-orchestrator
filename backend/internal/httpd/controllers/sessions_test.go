@@ -5383,3 +5383,30 @@ func TestSessionsAPI_SpawnUnknownWorkspaceRepoReturns422(t *testing.T) {
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","kind":"worker","harness":"codex","repoName":"nope"}`)
 	assertErrorCode(t, body, status, http.StatusUnprocessableEntity, "UNKNOWN_WORKSPACE_REPO")
 }
+
+// TestSessionsAPI_SpawnPassesRoleToService asserts the spawn body's role
+// reaches the service verbatim (the service resolves and validates it).
+func TestSessionsAPI_SpawnPassesRoleToService(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","kind":"worker","harness":"codex","role":"controller"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.Role != domain.SessionRoleController {
+		t.Fatalf("Role = %q, want controller", svc.lastSpawn.Role)
+	}
+}
+
+// TestSessionsAPI_SpawnRoleRefusalReturns422 asserts the service's role
+// refusals reach the client as 422s with their codes.
+func TestSessionsAPI_SpawnRoleRefusalReturns422(t *testing.T) {
+	for _, code := range []string{"INVALID_SESSION_ROLE", "PERMISSION_MODE_NOT_ALLOWED_FOR_ROLE"} {
+		svc := newFakeSessionService()
+		svc.spawnErr = apierr.Unprocessable(code, "refused", nil)
+		srv := newSessionTestServer(t, svc)
+		body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","kind":"worker","harness":"codex","role":"writer"}`)
+		assertErrorCode(t, body, status, http.StatusUnprocessableEntity, code)
+	}
+}

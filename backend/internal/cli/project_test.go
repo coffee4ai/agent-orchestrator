@@ -475,3 +475,112 @@ func TestProjectRemove_YesSkipsConfirmationAndSupportsBackendRemoveEnvelope(t *t
 		t.Fatalf("--yes output should skip prompt and print removal:\n%s", out)
 	}
 }
+
+// TestProjectSetConfig_RoleFlags table-tests the role flags of
+// `ao project set-config`: --strict-roles sends strictRoles only when given,
+// --permissions-file sends the repo-relative path for the daemon to read with
+// --repo (default __root__), and --controller-rules-file sets the controller
+// rules file.
+func TestProjectSetConfig_RoleFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantBody    map[string]any
+		wantMissing []string
+		wantUsage   string
+	}{
+		{
+			name: "all role flags",
+			args: []string{"--strict-roles=false", "--permissions-file", "path.json", "--repo", "api", "--controller-rules-file", "docs/controller.md"},
+			wantBody: map[string]any{
+				"config":          map[string]any{"strictRoles": false, "controllerRulesFile": "docs/controller.md"},
+				"permissionsFile": "path.json",
+				"permissionsRepo": "api",
+			},
+		},
+		{
+			name:     "repo defaults to the root",
+			args:     []string{"--permissions-file", "path.json"},
+			wantBody: map[string]any{"config": map[string]any{}, "permissionsFile": "path.json", "permissionsRepo": "__root__"},
+		},
+		{
+			name:     "strict roles on",
+			args:     []string{"--strict-roles"},
+			wantBody: map[string]any{"config": map[string]any{"strictRoles": true}},
+		},
+		{
+			name:        "strict roles omitted",
+			args:        []string{"--controller-rules", "be terse"},
+			wantBody:    map[string]any{"config": map[string]any{"controllerRules": "be terse"}},
+			wantMissing: []string{"strictRoles"},
+		},
+		{
+			name:      "repo without a permissions file",
+			args:      []string{"--repo", "api", "--model", "m"},
+			wantUsage: "--repo requires --permissions-file",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+			writeRunFileFor(t, cfg, srv)
+
+			_, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, append([]string{"project", "set-config", "demo"}, tc.args...)...)
+			if tc.wantUsage != "" {
+				if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), tc.wantUsage) {
+					t.Fatalf("err=%v exit=%d, want usage error %q", err, ExitCode(err), tc.wantUsage)
+				}
+				if capture.method == http.MethodPut {
+					t.Fatalf("usage error still sent %s %s %s", capture.method, capture.path, capture.body)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(capture.body, &got); err != nil {
+				t.Fatalf("decode request: %v\nbody=%s", err, capture.body)
+			}
+			gotConfig, _ := got["config"].(map[string]any)
+			for key, want := range tc.wantBody {
+				if key == "config" {
+					for field, value := range want.(map[string]any) {
+						if gotConfig[field] != value {
+							t.Fatalf("config.%s = %#v, want %#v; body=%s", field, gotConfig[field], value, capture.body)
+						}
+					}
+					continue
+				}
+				if got[key] != want {
+					t.Fatalf("%s = %#v, want %#v; body=%s", key, got[key], want, capture.body)
+				}
+			}
+			for _, field := range tc.wantMissing {
+				if _, ok := gotConfig[field]; ok {
+					t.Fatalf("config.%s sent although its flag was not given; body=%s", field, capture.body)
+				}
+			}
+		})
+	}
+}
+
+// TestProjectAdd_SetsStrictRoles asserts the fork's `ao project add`
+// registers a project with strictRoles on, beside any agent flags.
+func TestProjectAdd_SetsStrictRoles(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"demo","path":"/repo/demo"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "project", "add", "--path", "/repo/demo", "--worker-agent", "codex")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got addProjectRequest
+	if err := json.Unmarshal(capture.body, &got); err != nil {
+		t.Fatalf("decode request: %v\nbody=%s", err, capture.body)
+	}
+	if got.Config == nil || got.Config.StrictRoles == nil || !*got.Config.StrictRoles || got.Config.Worker.Agent != "codex" {
+		t.Fatalf("add config = %#v, want strictRoles true beside worker codex", got.Config)
+	}
+}

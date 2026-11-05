@@ -2845,6 +2845,7 @@ func projectOperations() []operation {
 				{http.StatusOK, controllers.ProjectResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},

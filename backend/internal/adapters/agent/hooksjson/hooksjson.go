@@ -182,6 +182,11 @@ type Manager struct {
 	Path func(workspacePath string) string
 	// Managed is the set of hooks AO installs.
 	Managed []HookSpec
+	// Permissions, when set, is the permission-rule set AO owns in the file's
+	// top-level "permissions" object; Install replaces AO's previous entries
+	// with it and keeps the user's. Nil leaves AO's permission entries as they
+	// are. Uninstall always removes them.
+	Permissions *Permissions
 }
 
 // Install reconciles AO's managed hooks into the workspace's hooks file,
@@ -223,6 +228,11 @@ func (m Manager) Install(ctx context.Context, workspacePath string) error {
 			return fmt.Errorf("%s.GetAgentHooks: %w", m.Label, err)
 		}
 	}
+	if m.Permissions != nil {
+		if err := reconcilePermissions(topLevel, m.Permissions); err != nil {
+			return fmt.Errorf("%s.GetAgentHooks: %w", m.Label, err)
+		}
+	}
 
 	if err := writeHooksFile(hooksPath, topLevel, rawHooks); err != nil {
 		return fmt.Errorf("%s.GetAgentHooks: %w", m.Label, err)
@@ -260,8 +270,9 @@ func removeManagedPrefixes(groups []MatcherGroup, prefixes []string) []MatcherGr
 	return result
 }
 
-// Uninstall removes AO's hooks from the workspace's hooks file, leaving
-// user-defined hooks and unrelated settings untouched. A missing file is a no-op.
+// Uninstall removes AO's hooks and AO's permission entries from the
+// workspace's hooks file, leaving user-defined hooks, the user's permission
+// rules and unrelated settings untouched. A missing file is a no-op.
 func (m Manager) Uninstall(ctx context.Context, workspacePath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -286,6 +297,11 @@ func (m Manager) Uninstall(ctx context.Context, workspacePath string) error {
 		}
 		groups = removeManaged(groups, m.CommandPrefix)
 		if err := m.marshalEvent(rawHooks, event, groups); err != nil {
+			return fmt.Errorf("%s.UninstallHooks: %w", m.Label, err)
+		}
+	}
+	if _, ok := topLevel[ManagedPermissionsKey]; ok {
+		if err := reconcilePermissions(topLevel, nil); err != nil {
 			return fmt.Errorf("%s.UninstallHooks: %w", m.Label, err)
 		}
 	}

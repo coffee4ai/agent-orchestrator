@@ -357,6 +357,11 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if cfg.ProjectID == "" && cfg.Kind != domain.KindWorker {
 		return domain.Session{}, 0, 0, apierr.Invalid("STANDALONE_WORKER_REQUIRED", "Standalone sessions must be workers", nil)
 	}
+	role, err := resolveSpawnRole(cfg.Kind, cfg.Role)
+	if err != nil {
+		return domain.Session{}, 0, 0, err
+	}
+	cfg.Role = role
 	if cfg.Kind == domain.KindOrchestrator {
 		cfg.Async = true
 		unlock := s.lockOrchestratorProject(cfg.ProjectID)
@@ -383,6 +388,21 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 	return s.spawn(ctx, cfg)
+}
+
+// resolveSpawnRole returns the role a spawn runs as: the named one, or for an
+// empty role the kind's default (writer for a worker, orchestrator for an
+// orchestrator), so desktop, tracker and automation spawns that name no role
+// keep working. A role outside the four is a 422.
+func resolveSpawnRole(kind domain.SessionKind, role domain.SessionRole) (domain.SessionRole, error) {
+	if role == "" {
+		return domain.DefaultSessionRole(kind), nil
+	}
+	if !role.Valid() {
+		return "", apierr.Unprocessable("INVALID_SESSION_ROLE",
+			fmt.Sprintf("role %q is not a session role: use orchestrator, controller, writer or reviewer", role), nil)
+	}
+	return role, nil
 }
 
 func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
@@ -789,6 +809,7 @@ func (s *Service) SpawnOrchestrator(
 	sess, _, _, err := s.spawn(ctx, ports.SpawnConfig{
 		ProjectID:     projectID,
 		Kind:          domain.KindOrchestrator,
+		Role:          domain.SessionRoleOrchestrator,
 		Async:         true,
 		RequestedMode: mode,
 		AgentConfig: ports.AgentConfig{
@@ -1832,8 +1853,12 @@ func toSpawnAPIError(err error) error {
 		return apierr.Conflict("WORKSPACE_PROVISION_FAILED", setupErr.Error(), nil)
 	}
 	switch {
+	case errors.Is(err, sessionmanager.ErrPermissionModeNotAllowedForRole):
+		return apierr.Unprocessable("PERMISSION_MODE_NOT_ALLOWED_FOR_ROLE", "permission mode not allowed for role: "+
+			"under strictRoles a writer or controller cannot run in the auto or bypass-permissions mode; set the project's permission (ao project set-config --permission) or the spawn's approvalMode to default or accept-edits", nil)
 	case errors.Is(err, sessionmanager.ErrUnknownWorkspaceRepo):
-		// apierr has no 422 kind: the controller maps this sentinel itself.
+		// The controller maps this sentinel itself: its 422 names the
+		// requested repoName.
 		return err
 	case errors.Is(err, sessionmanager.ErrClientRequestConflict):
 		return apierr.Conflict("CLIENT_REQUEST_CONFLICT", "clientRequestId belongs to a different task", nil)

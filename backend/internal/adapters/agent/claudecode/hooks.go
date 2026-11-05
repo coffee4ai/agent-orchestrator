@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -73,9 +74,20 @@ func claudeSettingsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, claudeSettingsDirName, claudeSettingsFileName)
 }
 
-// GetAgentHooks installs AO's Claude Code hooks, preserving user-defined hooks and unrelated settings.
+// GetAgentHooks installs AO's Claude Code hooks, preserving user-defined hooks
+// and unrelated settings. For a session role it also writes the resolved
+// permission rules into the file's "permissions" object (deny from
+// cfg.PermissionsDeny, allow from cfg.PermissionsAllow), replacing AO's
+// previous entries and keeping the user's. An empty role (a hooks install
+// outside the session's own launch, such as the native reviewer's PreLaunch in
+// the worker's checkout) and the reviewer role, whose rules travel on its
+// launch, leave AO's permission entries as they are.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
-	return claudeHooks.Install(ctx, cfg.WorkspacePath)
+	manager := claudeHooks
+	if cfg.Role != "" && cfg.Role != domain.SessionRoleReviewer {
+		manager.Permissions = &hooksjson.Permissions{Deny: cfg.PermissionsDeny, Allow: cfg.PermissionsAllow}
+	}
+	return manager.Install(ctx, cfg.WorkspacePath)
 }
 
 // UninstallHooks removes AO's Claude Code hooks, leaving user-defined hooks untouched.

@@ -6407,3 +6407,69 @@ func TestToSpawnAPIErrorKeepsUnknownWorkspaceRepo(t *testing.T) {
 		t.Fatalf("mapped = %v, want ErrUnknownWorkspaceRepo kept", mapped)
 	}
 }
+
+// TestSpawnResolvesSessionRole asserts an empty role defaults by kind (writer
+// for a worker, orchestrator for an orchestrator), a named role passes
+// through, and an unknown role is refused with a 422 before the manager runs.
+func TestSpawnResolvesSessionRole(t *testing.T) {
+	cases := []struct {
+		kind domain.SessionKind
+		role domain.SessionRole
+		want domain.SessionRole
+	}{
+		{kind: domain.KindWorker, want: domain.SessionRoleWriter},
+		{kind: domain.KindOrchestrator, want: domain.SessionRoleOrchestrator},
+		{kind: domain.KindWorker, role: domain.SessionRoleController, want: domain.SessionRoleController},
+		{kind: domain.KindWorker, role: domain.SessionRoleReviewer, want: domain.SessionRoleReviewer},
+	}
+	for _, tc := range cases {
+		st := newFakeStore()
+		st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+		fc := &fakeCommander{}
+		svc := &Service{manager: fc, store: st}
+		if _, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: tc.kind, Role: tc.role}); err != nil {
+			t.Fatalf("Spawn kind=%s role=%q: %v", tc.kind, tc.role, err)
+		}
+		if fc.spawnedCfg.Role != tc.want {
+			t.Fatalf("kind=%s role=%q: manager got role %q, want %q", tc.kind, tc.role, fc.spawnedCfg.Role, tc.want)
+		}
+	}
+
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	fc := &fakeCommander{}
+	svc := &Service{manager: fc, store: st}
+	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Role: "admin"})
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindUnprocessable || apiErr.Code != "INVALID_SESSION_ROLE" {
+		t.Fatalf("err = %#v, want a 422 INVALID_SESSION_ROLE", err)
+	}
+	if fc.spawned {
+		t.Fatal("an invalid role reached the manager")
+	}
+}
+
+// TestSpawnOrchestratorSetsOrchestratorRole asserts the orchestrator route
+// spawns the orchestrator role.
+func TestSpawnOrchestratorSetsOrchestratorRole(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	fc := &fakeCommander{}
+	svc := &Service{manager: fc, store: st}
+	if _, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "", ""); err != nil {
+		t.Fatalf("SpawnOrchestrator: %v", err)
+	}
+	if fc.spawnedCfg.Role != domain.SessionRoleOrchestrator {
+		t.Fatalf("role = %q, want orchestrator", fc.spawnedCfg.Role)
+	}
+}
+
+// TestToSpawnAPIErrorRefusesPermissionModeForRole asserts the manager's
+// strictRoles permission refusal surfaces as a 422.
+func TestToSpawnAPIErrorRefusesPermissionModeForRole(t *testing.T) {
+	raw := fmt.Errorf("spawn: %w: role \"writer\" cannot run in \"auto\" mode", sessionmanager.ErrPermissionModeNotAllowedForRole)
+	var apiErr *apierr.Error
+	if mapped := toSpawnAPIError(raw); !errors.As(mapped, &apiErr) || apiErr.Kind != apierr.KindUnprocessable || apiErr.Code != "PERMISSION_MODE_NOT_ALLOWED_FOR_ROLE" {
+		t.Fatalf("mapped = %#v, want a 422 PERMISSION_MODE_NOT_ALLOWED_FOR_ROLE", mapped)
+	}
+}
