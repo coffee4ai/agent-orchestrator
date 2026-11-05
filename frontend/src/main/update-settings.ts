@@ -88,6 +88,7 @@ export interface UpdateStatus {
 /** File holding the user's auto-update preferences under the ~/.ao state dir. */
 export const UPDATE_SETTINGS_FILE_NAME = "update-settings.json";
 
+// Fork build (D10): auto-update stays off by default; the user opts in.
 const DEFAULTS: UpdateSettings = {
 	enabled: false,
 	channel: "latest",

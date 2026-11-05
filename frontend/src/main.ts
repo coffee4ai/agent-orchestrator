@@ -154,8 +154,7 @@ import {
 import { installCloudLocalAuthIPC } from "./main/cloud-auth-local";
 import { createCloudAgentProxy } from "./main/cloud-agent-proxy";
 import { installCloudCpProxy } from "./main/cloud-cp-proxy";
-import { DEFAULT_POSTHOG_HOST, DEFAULT_POSTHOG_PROJECT_KEY } from "./shared/posthog-config";
-import { daemonSentryDsn } from "./shared/sentry-config";
+import { telemetryOverrides } from "./main/telemetry-overrides";
 import { buildTelemetryBootstrap, readTelemetryInstallContext, rendererTelemetryEnabled } from "./shared/telemetry";
 import { detectInstallSource } from "./shared/install-environment";
 import {
@@ -1349,35 +1348,6 @@ let shellEnvPromise: Promise<void> | null = null;
 let terminalShellPreference: TerminalShellPreference = { ...DEFAULT_TERMINAL_SHELL };
 const configuredLoginShell = process.platform === "darwin" ? (os.userInfo().shell ?? undefined) : undefined;
 
-// Telemetry defaults stamped on the daemon env on every platform; explicit env
-// always wins.
-//
-// Unpackaged builds keep local event recording but never export to PostHog: a
-// dev loop or a CI job driving the real app would otherwise bill production
-// events and inflate install/DAU counts. Set AO_TELEMETRY_REMOTE explicitly to
-// exercise the export path from a dev build.
-function telemetryOverrides(): Record<string, string> {
-	return {
-		AO_TELEMETRY_EVENTS: process.env.AO_TELEMETRY_EVENTS ?? "on",
-		AO_TELEMETRY_REMOTE: process.env.AO_TELEMETRY_REMOTE ?? (isDev ? "off" : "posthog"),
-		AO_TELEMETRY_POSTHOG_KEY: process.env.AO_TELEMETRY_POSTHOG_KEY ?? DEFAULT_POSTHOG_PROJECT_KEY,
-		AO_TELEMETRY_POSTHOG_HOST: process.env.AO_TELEMETRY_POSTHOG_HOST ?? DEFAULT_POSTHOG_HOST,
-		// Daemon-side Sentry (5xx + panics with Go stacks). Stamped on the daemon
-		// env so the spawned daemon inherits the DSN; off in dev to match the
-		// PostHog remote gate, and an explicit env always wins. A blank value
-		// leaves the daemon's Sentry a no-op.
-		AO_SENTRY_DSN: daemonSentryDsn(process.env.AO_SENTRY_DSN, isDev),
-		// The daemon binary has no version of its own that release tooling sets,
-		// so without this every daemon event lands unattributable to a release.
-		AO_TELEMETRY_APP_VERSION: process.env.AO_TELEMETRY_APP_VERSION ?? app.getVersion(),
-		// Kill switch: forwarded so a noisy stream can be silenced by env on an
-		// install that already exists, without shipping a new build.
-		...(process.env.AO_TELEMETRY_DISABLED_EVENTS
-			? { AO_TELEMETRY_DISABLED_EVENTS: process.env.AO_TELEMETRY_DISABLED_EVENTS }
-			: {}),
-	};
-}
-
 // Run the user's login shell to dump its env. stdin is ignored so an rc that
 // reads input hits EOF instead of hanging; stderr is ignored to drop banner
 // noise. Never rejects: resolves null on spawn error, non-zero exit, or timeout
@@ -1585,12 +1555,12 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	// Windows keeps its native environment semantics while overlaying values
 	// exported by the selected login-shell probe.
 	if (process.platform === "win32") {
-		return { ...process.env, ...(cachedShellEnv ?? {}), ...devExtras, ...telemetryOverrides(), ...ownerTag };
+		return { ...process.env, ...(cachedShellEnv ?? {}), ...devExtras, ...telemetryOverrides({ isDev, appVersion: app.getVersion(), env: process.env }), ...ownerTag };
 	}
 	return buildDaemonEnv(
 		process.env,
 		cachedShellEnv,
-		{ ...devExtras, ...telemetryOverrides(), ...ownerTag },
+		{ ...devExtras, ...telemetryOverrides({ isDev, appVersion: app.getVersion(), env: process.env }), ...ownerTag },
 		configuredLoginShell,
 	);
 }

@@ -46,7 +46,17 @@ type daemonStatus struct {
 	Health         string     `json:"health,omitempty"`
 	Ready          string     `json:"ready,omitempty"`
 	Error          string     `json:"error,omitempty"`
+	Build          *buildInfo `json:"build,omitempty"`
 	owned          bool
+}
+
+// buildInfo mirrors GET /api/v1/system/build: the build flags a fork operator
+// checks to confirm telemetry, Sentry and chat hibernation are as intended.
+type buildInfo struct {
+	TelemetryRemote string `json:"telemetryRemote"`
+	SentryEnabled   bool   `json:"sentryEnabled"`
+	ChatHibernation bool   `json:"chatHibernation"`
+	ForkCommit      string `json:"forkCommit"`
 }
 
 type probeResult struct {
@@ -139,6 +149,7 @@ func (c *commandContext) inspectDaemon(ctx context.Context) (daemonStatus, error
 	st.Ready = ready.Status
 	if ready.Status == string(stateReady) {
 		st.State = stateReady
+		st.Build = c.readBuildInfo(ctx, info.Port)
 		return st, nil
 	}
 	st.State = stateNotReady
@@ -169,6 +180,38 @@ func (c *commandContext) readProbe(ctx context.Context, port int, path string) (
 		return probeResult{}, fmt.Errorf("%s: missing status", path)
 	}
 	return body, nil
+}
+
+// readBuildInfo is best effort: an older daemon without the route leaves the
+// flag lines out instead of failing status.
+func (c *commandContext) readBuildInfo(ctx context.Context, port int) *buildInfo {
+	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, fmt.Sprintf("http://%s:%d/api/v1/system/build", config.LoopbackHost, port), http.NoBody)
+	if err != nil {
+		return nil
+	}
+	resp, err := c.deps.HTTPClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	var body buildInfo
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil
+	}
+	return &body
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
 }
 
 func verifyProbeOwner(probe probeResult, wantPID int, path string) error {
@@ -220,6 +263,22 @@ func writeStatus(cmd *cobra.Command, st daemonStatus) error {
 	if st.Ready != "" {
 		if _, err := fmt.Fprintf(out, "  readyz: %s\n", st.Ready); err != nil {
 			return err
+		}
+	}
+	if st.Build != nil {
+		sentry := "off (no DSN)"
+		if st.Build.SentryEnabled {
+			sentry = "on"
+		}
+		for _, line := range []string{
+			"telemetry remote: " + st.Build.TelemetryRemote,
+			"sentry: " + sentry,
+			"chat hibernation: " + onOff(st.Build.ChatHibernation),
+			"fork commit: " + st.Build.ForkCommit,
+		} {
+			if _, err := fmt.Fprintf(out, "  %s\n", line); err != nil {
+				return err
+			}
 		}
 	}
 	if st.Error != "" {

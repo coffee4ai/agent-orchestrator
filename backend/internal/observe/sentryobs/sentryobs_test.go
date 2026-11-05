@@ -54,6 +54,15 @@ func TestInitNoDSNIsNoOp(t *testing.T) {
 	Flush(0)
 }
 
+func TestSentryDisabledWithoutDSN(t *testing.T) {
+	if err := Init(Config{DSN: ""}); err != nil {
+		t.Fatalf("Init with empty DSN: %v", err)
+	}
+	if Enabled() {
+		t.Fatal("Enabled() = true with an empty DSN, want false")
+	}
+}
+
 func TestCaptureTagsAuthoritativeInstallID(t *testing.T) {
 	transport := &recordingTransport{events: make(chan *sentry.Event, 1)}
 	if err := Init(Config{DSN: "https://public@example.com/1", InstallID: "ins_stable", Release: "1.2.3", Environment: "stable", Transport: transport}); err != nil {

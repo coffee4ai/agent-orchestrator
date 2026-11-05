@@ -3952,3 +3952,16 @@ type SwitchSessionAgentAccountRequest struct {
 	// account's limit. Otherwise the move waits for the turn to finish.
 	StopTurn bool `json:"stopTurn,omitempty"`
 }
+
+// SystemBuildResponse reports the daemon's build flags, surfaced by `ao status`
+// so a build with telemetry or Sentry on is visible.
+type SystemBuildResponse struct {
+	// TelemetryRemote is the configured remote telemetry exporter ("off" or "posthog").
+	TelemetryRemote string `json:"telemetryRemote"`
+	// SentryEnabled reports whether Sentry is active (a DSN was configured).
+	SentryEnabled bool `json:"sentryEnabled"`
+	// ChatHibernation reports the developer-mode idle Chat shutdown gate.
+	ChatHibernation bool `json:"chatHibernation"`
+	// ForkCommit is the daemon's build commit (build version when no commit is stamped).
+	ForkCommit string `json:"forkCommit"`
+}

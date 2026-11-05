@@ -73,6 +73,8 @@ type APIDeps struct {
 	SessionCapabilities      controllers.SessionCapabilityValidator
 	ShellPreviewCapabilities controllers.ShellPreviewCapabilityValidator
 	SystemChecks             controllers.SystemChecker
+	// SystemBuild reports the daemon's build flags for GET /api/v1/system/build.
+	SystemBuild func() controllers.SystemBuildResponse
 	// HostID is this machine's stable, machine-bound identity, served by the
 	// unauthenticated GET /api/v1/identity probe so a phone can confirm which
 	// machine answered before presenting a credential.
@@ -216,7 +218,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
 		dev:           &controllers.DevController{Import: deps.DevImport},
 		browser:       &controllers.BrowserController{Svc: deps.Browser, Chrome: deps.BrowserChrome},
-		system:        &controllers.SystemController{Checks: deps.SystemChecks},
+		system:        &controllers.SystemController{Checks: deps.SystemChecks, Build: deps.SystemBuild},
 		identity:      &controllers.IdentityController{HostID: deps.HostID},
 		endpoints:     &controllers.EndpointsController{Source: deps.Endpoints},
 		telemetryID:   &controllers.TelemetryIdentityController{Source: deps.TelemetryIdentity},

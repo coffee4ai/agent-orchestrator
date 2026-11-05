@@ -27,6 +27,15 @@ func VersionString() string {
 	return strings.Join(parts, " ")
 }
 
+// forkCommit is the build commit, falling back to the version when the build
+// stamped no commit.
+func forkCommit() string {
+	if Commit != "" {
+		return Commit
+	}
+	return Version
+}
+
 func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
