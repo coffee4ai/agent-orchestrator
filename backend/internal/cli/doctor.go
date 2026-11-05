@@ -20,6 +20,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/claudeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
@@ -222,7 +223,7 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 			ExpectedVersionPrefix: spec.ExpectedVersionPrefix,
 		}))
 	}
-	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
+	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkACPRuntime(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks
 }
 
@@ -492,6 +493,23 @@ func (c *commandContext) checkCodexLaunchFlags(ctx context.Context) doctorCheck 
 		}
 	}
 	return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: "codex accepts AO's hook/trust launch flags"}
+}
+
+// checkACPRuntime shows where chat mode finds its ACP runtime: the four
+// lookups in order and which one resolved. It only inspects the filesystem and
+// the environment; it never launches the runtime.
+func (c *commandContext) checkACPRuntime(_ context.Context) doctorCheck {
+	const name = "acp-runtime"
+	env := map[string]string{
+		"AO_CLAUDE_ACP_COMMAND": os.Getenv("AO_CLAUDE_ACP_COMMAND"),
+		"AO_ACP_RUNTIME_DIR":    os.Getenv("AO_ACP_RUNTIME_DIR"),
+	}
+	lookups := strings.Join(claudeacp.RuntimeLookupOrder, "; ")
+	dir, source, err := claudeacp.LookupRuntimeDir(env, runtime.GOOS, os.Stat)
+	if err != nil {
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: name, Message: fmt.Sprintf("chat mode runtime not found: %v (lookups: %s)", err, lookups)}
+	}
+	return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: fmt.Sprintf("resolved: %s (%s); lookups: %s", source, dir, lookups)}
 }
 
 func (c *commandContext) checkGitHubToken(ctx context.Context) doctorCheck {
