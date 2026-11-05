@@ -234,8 +234,12 @@ func (s *Service) SetCloudOffering(ctx context.Context, enabled bool) (Snapshot,
 	return s.Get(ctx)
 }
 
-// ChatHibernationEnabled is false on every daemon boot until Developer Mode
-// enables it through the settings route.
+// SetChatHibernationDefault sets the boot-time gate from config
+// (AO_CHAT_HIBERNATION). Call it before the service serves requests.
+func (s *Service) SetChatHibernationDefault(enabled bool) { s.chatHibernation.Store(enabled) }
+
+// ChatHibernationEnabled starts at the configured boot default (on in the fork)
+// and changes only through the settings route.
 func (s *Service) ChatHibernationEnabled() bool { return s.chatHibernation.Load() }
 
 // SetChatHibernationEnabled changes the in-memory hibernation gate.

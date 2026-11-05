@@ -346,6 +346,7 @@ func Run(buildVersion, buildCommit string) error {
 		settingssvc.OfferingFromConfig(cfg),
 		func() time.Time { return time.Now().UTC() },
 	)
+	settingsSvc.SetChatHibernationDefault(cfg.ChatHibernation)
 
 	// Chat service. The driver registry is the capability gate: a harness with no
 	// registered driver cannot start in chat mode, so an unsupported request fails

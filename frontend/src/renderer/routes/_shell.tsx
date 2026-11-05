@@ -359,6 +359,8 @@ function ShellLayout() {
 	const windowTranslucency = useUiStore((state) => state.windowTranslucency);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const chatHibernationSyncRef = useRef<Promise<void>>(Promise.resolve());
+	// Developer Mode value last known to match the daemon for the current daemon.
+	const chatHibernationBaselineRef = useRef<{ daemon: string; developerMode: boolean } | null>(null);
 	const isSidebarOpen = useUiStore(sidebarIsVisible);
 	const toggleSidebar = useUiStore((state) => state.toggleSidebar);
 	const settingsOpen = useUiStore((state) => state.settingsModal?.scope === "global");
@@ -1129,10 +1131,22 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 		applyDocumentThemeStyle(themeStyle);
 	}, [themeStyle]);
 
-	// The renderer owns Developer Mode; the daemon must know its value before
-	// either the view-close path or the idle sweep can hibernate a provider.
+	// The daemon owns the chat hibernation default (on in the fork). The renderer
+	// never overrides it when a daemon becomes ready; it only forwards a Developer
+	// Mode change the user makes while connected.
 	useEffect(() => {
-		if (usesPreviewWorkspaceData || daemonStatus.state !== "ready" || !daemonStatus.port) return;
+		if (usesPreviewWorkspaceData || daemonStatus.state !== "ready" || !daemonStatus.port) {
+			chatHibernationBaselineRef.current = null;
+			return;
+		}
+		const daemon = `${daemonStatus.pid ?? ""}:${daemonStatus.port}`;
+		const baseline = chatHibernationBaselineRef.current;
+		if (!baseline || baseline.daemon !== daemon) {
+			chatHibernationBaselineRef.current = { daemon, developerMode };
+			return;
+		}
+		if (baseline.developerMode === developerMode) return;
+		baseline.developerMode = developerMode;
 		let cancelled = false;
 		let retry: ReturnType<typeof setTimeout> | undefined;
 		const sync = () => {

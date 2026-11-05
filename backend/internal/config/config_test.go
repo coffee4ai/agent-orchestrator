@@ -791,3 +791,28 @@ func TestLoadTelemetryRetention(t *testing.T) {
 		})
 	}
 }
+
+func TestChatHibernationDefaultOnInFork(t *testing.T) {
+	t.Setenv("AO_CHAT_HIBERNATION", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.ChatHibernation {
+		t.Error("ChatHibernation = false with no env, want true (fork default)")
+	}
+
+	t.Setenv("AO_CHAT_HIBERNATION", "off")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load off: %v", err)
+	}
+	if cfg.ChatHibernation {
+		t.Error("ChatHibernation = true with AO_CHAT_HIBERNATION=off, want false")
+	}
+
+	t.Setenv("AO_CHAT_HIBERNATION", "maybe")
+	if _, err := Load(); err == nil {
+		t.Error("Load accepted AO_CHAT_HIBERNATION=maybe")
+	}
+}

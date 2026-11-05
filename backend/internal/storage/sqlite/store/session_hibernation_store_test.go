@@ -169,3 +169,40 @@ func TestSessionHibernationMarkerEmitsOneChangePerTransition(t *testing.T) {
 		t.Fatalf("wake event payload = %+v, %v", payload, err)
 	}
 }
+
+// Pins the existing kind = 'orchestrator' filter in ListChatHibernationCandidates:
+// the fork enables hibernation by default, so the orchestrator must never be a
+// candidate however idle it is.
+func TestListChatHibernationCandidatesExcludesOrchestrator(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedProject(t, s, "mer")
+	var chats []domain.SessionID
+	var orchestrator domain.SessionID
+	for i := 0; i < 4; i++ {
+		rec := sampleRecord("mer")
+		rec.Mode, rec.Activity.State, rec.Metadata.ProviderConversationID = domain.SessionModeChat, domain.ActivityIdle, "native-id"
+		if i == 0 {
+			rec.Kind = domain.KindOrchestrator
+		}
+		created, err := s.CreateSession(ctx, rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			orchestrator = created.ID
+		} else {
+			chats = append(chats, created.ID)
+		}
+	}
+	got, err := s.ListChatHibernationCandidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got, orchestrator) {
+		t.Fatalf("candidates %v include the orchestrator %s", got, orchestrator)
+	}
+	if !slices.Equal(got, chats) || len(got) != 3 {
+		t.Fatalf("candidates = %v, want the three idle chats %v", got, chats)
+	}
+}
