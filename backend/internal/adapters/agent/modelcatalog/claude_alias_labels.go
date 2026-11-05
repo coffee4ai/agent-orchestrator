@@ -121,3 +121,49 @@ func formatVersion(version []int) string {
 	}
 	return strings.Join(parts, ".")
 }
+
+// ResolveClaudeAlias maps a Claude Code family alias ("sonnet") to the
+// catalog's current concrete model id for that family: the catalog's default
+// when it belongs to the family, else the newest by version, the first listed
+// winning a tie. A concrete id the catalog lists passes through unchanged.
+// ok is false for anything else, including a family the catalog has no
+// concrete model for and aliases with a context suffix ("opus[1m]"), which
+// the caller validates as typed.
+func ResolveClaudeAlias(alias string, catalog ports.AgentModelCatalog) (modelID string, ok bool) {
+	trimmed := strings.TrimSpace(alias)
+	lower := strings.ToLower(trimmed)
+	match := claudeAliasPattern.FindStringSubmatch(lower)
+	if match == nil {
+		for _, item := range catalog.Models {
+			if item.ID == trimmed && trimmed != "" {
+				return trimmed, true
+			}
+		}
+		return "", false
+	}
+	if match[2] != "" {
+		return "", false
+	}
+	var best *ports.AgentModelInfo
+	var bestVersion []int
+	for i := range catalog.Models {
+		item := catalog.Models[i]
+		if claudeAliasPattern.MatchString(strings.ToLower(strings.TrimSpace(item.ID))) {
+			continue
+		}
+		family, version := claudeFamilyVersion(item)
+		if family != match[1] {
+			continue
+		}
+		if item.IsDefault {
+			return item.ID, true
+		}
+		if best == nil || compareVersions(version, bestVersion) > 0 {
+			best, bestVersion = &catalog.Models[i], version
+		}
+	}
+	if best == nil {
+		return "", false
+	}
+	return best.ID, true
+}

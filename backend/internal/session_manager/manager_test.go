@@ -7915,6 +7915,82 @@ func TestSpawn_RejectsUnsupportedClaudeTUIEffortBeforeSessionRow(t *testing.T) {
 	}
 }
 
+func TestSpawnResolvesModelAlias(t *testing.T) {
+	models := []ports.AgentModelInfo{
+		{ID: "claude-sonnet-5-1", Label: "Claude Sonnet 5.1", Efforts: []string{"low", "high"}},
+		{ID: "claude-sonnet-5-5", Label: "Claude Sonnet 5.5", Efforts: []string{"low", "high"}},
+		{ID: "claude-opus-5-5", Label: "Claude Opus 5.5", IsDefault: true, Efforts: []string{"low", "high"}},
+	}
+	spawn := func(m *Manager) (domain.SessionRecord, error) {
+		rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+			ProjectID:     "mer",
+			Kind:          domain.KindWorker,
+			Harness:       domain.HarnessClaudeCode,
+			RequestedMode: domain.SessionModeTUI,
+			Prompt:        "do the work",
+			AgentConfig:   ports.AgentConfig{Model: "sonnet"},
+		})
+		return rec, err
+	}
+
+	m, st, _, _ := newManager()
+	agent := &recordingAgent{}
+	m.agents = singleAgent{agent: agent}
+	m.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: models}})
+	rec, err := spawn(m)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if agent.lastConfig.Model != "claude-sonnet-5-5" {
+		t.Fatalf("launch model = %q, want claude-sonnet-5-5", agent.lastConfig.Model)
+	}
+	if got := st.sessions[rec.ID].Metadata.Model; got != "claude-sonnet-5-5" {
+		t.Fatalf("stored model = %q, want claude-sonnet-5-5 (never the alias)", got)
+	}
+
+	// The alias must not bypass the staleness refusal.
+	m, st, _, _ = newManager()
+	m.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: models, Stale: true}})
+	if _, err := spawn(m); !errors.Is(err, ports.ErrModelCapabilitiesUnavailable) {
+		t.Fatalf("stale catalog err = %v, want ErrModelCapabilitiesUnavailable", err)
+	}
+	if len(st.sessions) != 0 {
+		t.Fatalf("no session row should be created, got %d", len(st.sessions))
+	}
+}
+
+func TestSpawnResolvesModelAliasAgainstRediscoveredCatalog(t *testing.T) {
+	m, st, _, _ := newManager()
+	agent := &recordingAgent{}
+	m.agents = singleAgent{agent: agent}
+	var refreshes []bool
+	m.SetModelCatalog(refreshRecordingCatalog{refreshes: &refreshes,
+		saved: ports.AgentModelCatalog{Stale: true, Models: []ports.AgentModelInfo{
+			{ID: "claude-sonnet-5-1", Label: "Claude Sonnet 5.1", Efforts: []string{"high"}},
+		}},
+		fresh: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+			{ID: "claude-sonnet-5-1", Label: "Claude Sonnet 5.1", Efforts: []string{"high"}},
+			{ID: "claude-sonnet-5-5", Label: "Claude Sonnet 5.5", Efforts: []string{"high"}},
+		}}})
+	rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeTUI, Prompt: "do the work",
+		AgentConfig: ports.AgentConfig{Model: "sonnet"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if len(refreshes) != 2 || !refreshes[1] {
+		t.Fatalf("catalog calls = %v, want saved then rediscovery", refreshes)
+	}
+	if agent.lastConfig.Model != "claude-sonnet-5-5" {
+		t.Fatalf("launch model = %q, want the rediscovered claude-sonnet-5-5", agent.lastConfig.Model)
+	}
+	if got := st.sessions[rec.ID].Metadata.Model; got != "claude-sonnet-5-5" {
+		t.Fatalf("stored model = %q, want claude-sonnet-5-5", got)
+	}
+}
+
 func TestSpawn_RejectsExplicitEffortForUnsupportedHarnessBeforeSessionRow(t *testing.T) {
 	m, st, rt, ws := newManager()
 	m.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{

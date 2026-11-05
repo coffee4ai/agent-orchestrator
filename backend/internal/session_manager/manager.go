@@ -1691,9 +1691,18 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 	// Validate against the saved catalog first so a launch does not wait on a
 	// live model discovery. Rediscover only when the saved catalog cannot answer:
 	// it failed, is stale or updating, or lacks the requested model or effort.
+	requestedModel := modelID
 	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), false)
+	if err == nil && validateClaudeModel {
+		modelID = resolveClaudeModelAlias(&resolved, requestedModel, catalog)
+	}
 	if err != nil || !savedCatalogCovers(catalog, modelID, resolved.Effort) {
 		catalog, err = m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), true)
+		if err == nil && validateClaudeModel {
+			// Resolve the requested alias again: the saved catalog's id may be
+			// older than the rediscovered catalog's.
+			modelID = resolveClaudeModelAlias(&resolved, requestedModel, catalog)
+		}
 	}
 	if err != nil {
 		if modelChangedWithoutExplicitEffort {
@@ -7314,6 +7323,19 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// resolveClaudeModelAlias swaps a family alias ("sonnet") for the catalog's
+// current id for that family, in both the returned id and resolved.Model, so
+// the launch and the session row carry the concrete id. An id the catalog
+// cannot resolve is returned unchanged for the validation that follows.
+func resolveClaudeModelAlias(resolved *ports.AgentConfig, modelID string, catalog ports.AgentModelCatalog) string {
+	id, ok := modelcatalog.ResolveClaudeAlias(modelID, catalog)
+	if !ok {
+		id = modelID
+	}
+	resolved.Model = id
+	return id
 }
 
 // savedCatalogCovers reports whether a saved model catalog can answer a launch's
