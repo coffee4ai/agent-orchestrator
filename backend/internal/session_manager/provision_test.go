@@ -1010,22 +1010,33 @@ func TestRuntimeEnvOmitsAgentBrowserConfigOnDesktopHosts(t *testing.T) {
 	}
 }
 
-func TestRuntimeEnvDropsRejectedCredential(t *testing.T) {
-	var seen string
-	manager := &Manager{
-		dataDir:    "/data",
-		executable: func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
-		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		credentialRejections: func(_ context.Context, env map[string]string) []string {
-			seen = env["ANTHROPIC_API_KEY"]
-			return []string{"ANTHROPIC_API_KEY"}
-		},
+func rejectionManager(rejections CredentialRejections) *Manager {
+	return &Manager{
+		dataDir:              "/data",
+		executable:           func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
+		logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+		credentialRejections: rejections,
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
-		"ANTHROPIC_API_KEY": "rejected-value", "KEEP_ME": "kept",
+}
+
+func claudeRecord(workspace string) domain.SessionRecord {
+	return domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Harness: domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+}
+
+func TestRuntimeEnvDropsRejectedCredential(t *testing.T) {
+	var seenKey, seenDir string
+	var seenCtxErr error
+	manager := rejectionManager(func(ctx context.Context, dir string, env map[string]string) []string {
+		seenKey, seenDir, seenCtxErr = env["ANTHROPIC_API_KEY"], dir, ctx.Err()
+		return []string{"ANTHROPIC_API_KEY"}
 	})
-	if seen != "rejected-value" {
-		t.Fatalf("the rejection check must see the launch environment")
+	env := map[string]string{"ANTHROPIC_API_KEY": "rejected-value", "KEEP_ME": "kept"}
+	manager.dropRejectedCredentials(context.Background(), claudeRecord("/work/mer-1"), env)
+	if seenKey != "rejected-value" || seenDir != "/work/mer-1" || seenCtxErr != nil {
+		t.Fatalf("the check must see the launch env and the session workspace (dir=%q)", seenDir)
 	}
 	// An empty entry overrides the daemon's own inherited value; deleting the
 	// key would let the child inherit the rejected credential.
@@ -1038,14 +1049,39 @@ func TestRuntimeEnvDropsRejectedCredential(t *testing.T) {
 }
 
 func TestRuntimeEnvKeepsCredentialWhenNothingRejected(t *testing.T) {
-	manager := &Manager{
-		dataDir:              "/data",
-		executable:           func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
-		logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
-		credentialRejections: func(context.Context, map[string]string) []string { return nil },
-	}
-	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{"ANTHROPIC_API_KEY": "good"})
+	manager := rejectionManager(func(context.Context, string, map[string]string) []string { return nil })
+	env := map[string]string{"ANTHROPIC_API_KEY": "good"}
+	manager.dropRejectedCredentials(context.Background(), claudeRecord(""), env)
 	if env["ANTHROPIC_API_KEY"] != "good" {
-		t.Fatalf("a valid credential must pass through: %v", env["ANTHROPIC_API_KEY"] != "")
+		t.Fatalf("a valid credential must pass through")
+	}
+}
+
+func TestRejectedCredentialCheckSkipsOtherHarnesses(t *testing.T) {
+	calls := 0
+	manager := rejectionManager(func(context.Context, string, map[string]string) []string {
+		calls++
+		return []string{"ANTHROPIC_API_KEY"}
+	})
+	rec := claudeRecord("/work")
+	rec.Harness = domain.HarnessCodex
+	env := map[string]string{"ANTHROPIC_API_KEY": "kept"}
+	manager.dropRejectedCredentials(context.Background(), rec, env)
+	if calls != 0 || env["ANTHROPIC_API_KEY"] != "kept" {
+		t.Fatalf("a non-Claude launch must not run the check (calls=%d)", calls)
+	}
+}
+
+func TestRejectedCredentialCheckUsesTheLaunchContext(t *testing.T) {
+	var ctxErr error
+	manager := rejectionManager(func(ctx context.Context, _ string, _ map[string]string) []string {
+		ctxErr = ctx.Err()
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	manager.dropRejectedCredentials(ctx, claudeRecord(""), map[string]string{})
+	if ctxErr == nil {
+		t.Fatal("the caller's cancellation must reach the check")
 	}
 }

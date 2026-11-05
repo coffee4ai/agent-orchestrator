@@ -19,18 +19,27 @@ type authCacheEntry struct {
 	storedAt time.Time
 }
 
+// maxAuthCacheEntries bounds the cache. The ladder holds at most a handful of
+// credentials (three env variables, keychain, file), so a small cap keeps every
+// one of them without letting launches with changing credentials grow it.
+const maxAuthCacheEntries = 8
+
 type authCache struct {
-	mu    sync.RWMutex
-	entry *authCacheEntry
-	ttl   time.Duration
-	now   func() time.Time
+	mu      sync.RWMutex
+	entries map[string]*authCacheEntry
+	ttl     time.Duration
+	now     func() time.Time
 }
 
 func newAuthCache(ttl time.Duration) *authCache {
 	if ttl <= 0 {
 		ttl = defaultAuthCacheTTL
 	}
-	return &authCache{ttl: ttl, now: time.Now}
+	return &authCache{ttl: ttl, now: time.Now, entries: make(map[string]*authCacheEntry)}
+}
+
+func authCacheKey(fingerprint string, provider agentcreds.Provider) string {
+	return string(provider) + "\x00" + fingerprint
 }
 
 func (c *authCache) get(fingerprint string, provider agentcreds.Provider) (agentcreds.Result, bool) {
@@ -38,9 +47,9 @@ func (c *authCache) get(fingerprint string, provider agentcreds.Provider) (agent
 		return agentcreds.Result{}, false
 	}
 	c.mu.RLock()
-	entry := c.entry
+	entry := c.entries[authCacheKey(fingerprint, provider)]
 	c.mu.RUnlock()
-	if entry == nil || entry.result.Fingerprint != fingerprint || entry.result.Provider != provider {
+	if entry == nil {
 		return agentcreds.Result{}, false
 	}
 	ttl := c.ttl
@@ -64,8 +73,17 @@ func (c *authCache) put(result agentcreds.Result) {
 		return
 	}
 	c.mu.Lock()
-	c.entry = &authCacheEntry{result: result, storedAt: c.now()}
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= maxAuthCacheEntries {
+		oldestKey, oldest := "", time.Time{}
+		for key, entry := range c.entries {
+			if oldestKey == "" || entry.storedAt.Before(oldest) {
+				oldestKey, oldest = key, entry.storedAt
+			}
+		}
+		delete(c.entries, oldestKey)
+	}
+	c.entries[authCacheKey(result.Fingerprint, result.Provider)] = &authCacheEntry{result: result, storedAt: c.now()}
 }
 
 func (c *authCache) invalidate() {
@@ -73,7 +91,7 @@ func (c *authCache) invalidate() {
 		return
 	}
 	c.mu.Lock()
-	c.entry = nil
+	c.entries = make(map[string]*authCacheEntry)
 	c.mu.Unlock()
 	claudeAuthReports.invalidate()
 }

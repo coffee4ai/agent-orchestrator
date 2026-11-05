@@ -651,8 +651,9 @@ func (m *Manager) SetAgentAccounts(accounts ports.AgentAccountLaunchEnv) {
 }
 
 // CredentialRejections names the environment variables whose credential the
-// provider rejected for a launch with this environment (names, never values).
-type CredentialRejections func(ctx context.Context, env map[string]string) []string
+// provider rejected for a launch in workingDir with this environment (names,
+// never values). workingDir lets the check see the project's own settings.
+type CredentialRejections func(ctx context.Context, workingDir string, env map[string]string) []string
 
 // SetCredentialRejections completes daemon wiring before request handling
 // begins. Nil leaves every credential variable untouched.
@@ -6321,7 +6322,6 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 		env[EnvAgentBrowserToken] = m.agentBrowserToken
 	}
 	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive)
-	m.dropRejectedCredentials(env, caseInsensitive)
 	path, err := hookPATHForOS(m.executable, os.Getenv, projectEnv, m.dataDir, caseInsensitive)
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",
@@ -6357,17 +6357,20 @@ func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, en
 }
 
 // dropRejectedCredentials blanks every credential variable the provider
-// rejected, so the agent falls through to the working login instead of
-// failing on a stale key. The entry is set empty rather than deleted: a
-// missing key would let the child inherit the daemon's own value.
-func (m *Manager) dropRejectedCredentials(env map[string]string, caseInsensitive bool) {
-	if m.credentialRejections == nil {
+// rejected for this session's launch, so the agent falls through to the
+// working login instead of failing on a stale key. It runs only for Claude
+// Code launches, with the launch's own context and workspace, because the
+// answer depends on the project's settings and costs a provider request. The
+// entry is set empty rather than deleted: a missing key would let the child
+// inherit the daemon's own value.
+func (m *Manager) dropRejectedCredentials(ctx context.Context, rec domain.SessionRecord, env map[string]string) {
+	if m.credentialRejections == nil || rec.Harness != domain.HarnessClaudeCode {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	for _, name := range m.credentialRejections(ctx, env) {
-		setProtectedEnv(env, name, "", caseInsensitive)
+	for _, name := range m.credentialRejections(ctx, rec.Metadata.WorkspacePath, env) {
+		setProtectedEnv(env, name, "", envKeysCaseInsensitive)
 	}
 }
 
@@ -6446,6 +6449,7 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	if err != nil {
 		return rec, nil, err
 	}
+	m.dropRejectedCredentials(ctx, rec, env)
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, rec.ControllerOwner(), verifier)
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)
@@ -6466,6 +6470,7 @@ func (m *Manager) prepareChatControllerEnv(
 	if err != nil {
 		return rec, nil, err
 	}
+	m.dropRejectedCredentials(ctx, rec, env)
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, expected, verifier)
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)

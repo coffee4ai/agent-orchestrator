@@ -594,8 +594,8 @@ func Run(buildVersion string) error {
 		SetCredentialRejections(sessionmanager.CredentialRejections)
 	}); ok {
 		claude := &claudecodeagent.Plugin{}
-		wired.SetCredentialRejections(func(ctx context.Context, env map[string]string) []string {
-			return claude.RejectedCredentialEnv(ctx, "", env)
+		wired.SetCredentialRejections(func(ctx context.Context, workingDir string, env map[string]string) []string {
+			return claude.RejectedCredentialEnv(ctx, workingDir, env)
 		})
 	}
 	if stopper, ok := sessMgr.(interface {

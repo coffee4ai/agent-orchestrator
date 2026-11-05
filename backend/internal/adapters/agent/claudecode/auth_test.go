@@ -865,3 +865,27 @@ func TestRejectedCredentialStepNamesVariablesNotValues(t *testing.T) {
 		t.Fatal("no rejection, no diagnostic")
 	}
 }
+
+// The workspace's own settings decide the provider: a gateway key must be
+// probed against the project's gateway, never against api.anthropic.com.
+func TestRejectedCredentialEnvReadsTheWorkspaceGatewaySettings(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	InvalidateAuthCache()
+	t.Cleanup(InvalidateAuthCache)
+	gets := 0
+	server := withStubValidator(t, func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	workspace := t.TempDir()
+	writeClaudeAuthSettings(t, filepath.Join(workspace, ".claude", "settings.json"),
+		map[string]string{"ANTHROPIC_BASE_URL": server.URL})
+	env := map[string]string{"ANTHROPIC_API_KEY": "gateway-key", "CLAUDE_CONFIG_DIR": t.TempDir()}
+	got := (&Plugin{}).RejectedCredentialEnv(context.Background(), workspace, env)
+	if len(got) != 0 {
+		t.Fatalf("a key the gateway accepts must not be blanked: %v", got)
+	}
+	if gets != 1 {
+		t.Fatalf("gateway probes = %d, want 1", gets)
+	}
+}
