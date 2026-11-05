@@ -2,7 +2,9 @@ package cdc_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -166,5 +168,55 @@ func TestBroadcasterRecoversPanickingSubscriber(t *testing.T) {
 
 	if good != 2 {
 		t.Fatalf("good subscriber got %d, want 2 (panic was not isolated)", good)
+	}
+}
+
+// TestForkEventTypesFlowThroughPoller pins the fork's event-type constants to
+// the change_log CHECK: every constant is accepted by the migrated schema and
+// read back through the poller with the same type.
+func TestForkEventTypesFlowThroughPoller(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitetest.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "ao.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	want := []cdc.EventType{
+		cdc.EventPermissionEventRecorded,
+		cdc.EventDecisionUpdated,
+		cdc.EventPlanUpdated,
+		cdc.EventTaskUpdated,
+		cdc.EventTaskRoundUpdated,
+		cdc.EventLockUpdated,
+		cdc.EventHandoffUpdated,
+		cdc.EventSendDeliveryUpdated,
+		cdc.EventReportUpdated,
+	}
+	for _, eventType := range want {
+		if _, err := db.ExecContext(ctx, `INSERT INTO change_log (event_type, payload) VALUES (?, '{}')`, string(eventType)); err != nil {
+			t.Fatalf("insert %s: %v", eventType, err)
+		}
+	}
+
+	var got []cdc.EventType
+	bc := cdc.NewBroadcaster()
+	bc.Subscribe(func(e cdc.Event) { got = append(got, e.Type) })
+	if err := cdc.NewPoller(s, bc, cdc.PollerConfig{}).Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("delivered %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("delivered %v, want %v", got, want)
+		}
 	}
 }
