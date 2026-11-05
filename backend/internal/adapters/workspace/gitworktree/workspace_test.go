@@ -1122,3 +1122,60 @@ func TestGitWorktreeExitStatusOneHelper(t *testing.T) {
 	}
 	os.Exit(1)
 }
+
+// TestChildOnlySessionHasNoRootWorktree asserts a workspace child session
+// (ao spawn --repo <child>) goes through the single-repository Create with the
+// child's RepoPath: its worktree is the child's own under the managed root, the
+// session branch exists only in the child, and the root repository is untouched.
+// The child's branch being checked out elsewhere still fails typed.
+func TestChildOnlySessionHasNoRootWorktree(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	managed := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: managed, RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx := context.Background()
+	info, err := ws.Create(ctx, ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess", Kind: domain.KindWorker, Branch: "ao/proj-1", RepoPath: childRepo})
+	if err != nil {
+		t.Fatalf("create child worktree: %v", err)
+	}
+	wantPath, err := physicalAbs(filepath.Join(managed, "proj", "sess"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath, _ := physicalAbs(info.Path); gotPath != wantPath {
+		t.Fatalf("child workspace path = %q, want %q", info.Path, wantPath)
+	}
+	wantRepo, _ := physicalAbs(childRepo)
+	if info.RepoPath != wantRepo {
+		t.Fatalf("child workspace repo = %q, want %q", info.RepoPath, wantRepo)
+	}
+	if got := gitOutput(t, git, info.Path, "rev-parse", "--abbrev-ref", "HEAD"); got != "ao/proj-1" {
+		t.Fatalf("child worktree branch = %q, want ao/proj-1", got)
+	}
+	common := gitOutput(t, git, info.Path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if physical, _ := physicalAbs(common); physical != filepath.Join(wantRepo, ".git") {
+		t.Fatalf("child worktree belongs to %q, want the child repository %q", common, wantRepo)
+	}
+	if out := gitOutput(t, git, rootRepo, "branch", "--list", "ao/proj-1"); out != "" {
+		t.Fatalf("root repository gained the session branch: %q", out)
+	}
+	if out := gitOutput(t, git, rootRepo, "worktree", "list", "--porcelain"); strings.Count(out, "worktree ") != 1 {
+		t.Fatalf("root repository gained a worktree:\n%s", out)
+	}
+	if err := ws.Destroy(ctx, info); err != nil {
+		t.Fatalf("destroy child worktree: %v", err)
+	}
+
+	// The shared branch held by another worktree of the child repository fails
+	// typed for that repository.
+	runGit(t, git, childRepo, "worktree", "add", "-b", "ao/proj-2", filepath.Join(tmp, "elsewhere"))
+	_, err = ws.Create(ctx, ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess2", Kind: domain.KindWorker, Branch: "ao/proj-2", RepoPath: childRepo})
+	if !errors.Is(err, ports.ErrWorkspaceBranchCheckedOutElsewhere) {
+		t.Fatalf("err = %v, want ports.ErrWorkspaceBranchCheckedOutElsewhere", err)
+	}
+}

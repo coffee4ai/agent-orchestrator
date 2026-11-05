@@ -6397,3 +6397,13 @@ func TestSpawnFirstForInstallFailedEligibleSpawnReleasesTheClaim(t *testing.T) {
 		t.Fatalf("retry first_for_install = %#v, want true", got)
 	}
 }
+
+// TestToSpawnAPIErrorKeepsUnknownWorkspaceRepo asserts an unknown --repo keeps
+// its sentinel through the service so the controller can answer 422 instead of
+// the workspace stage's 409.
+func TestToSpawnAPIErrorKeepsUnknownWorkspaceRepo(t *testing.T) {
+	raw := fmt.Errorf("spawn mer-1: %w: %w: \"nope\"", sessionmanager.ErrWorkspaceCreate, sessionmanager.ErrUnknownWorkspaceRepo)
+	if mapped := toSpawnAPIError(raw); !errors.Is(mapped, sessionmanager.ErrUnknownWorkspaceRepo) {
+		t.Fatalf("mapped = %v, want ErrUnknownWorkspaceRepo kept", mapped)
+	}
+}

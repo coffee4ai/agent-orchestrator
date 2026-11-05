@@ -26,6 +26,7 @@ type spawnOptions struct {
 	kind            string
 	mode            string
 	branch          string
+	repo            string
 	prompt          string
 	issue           string
 	name            string
@@ -49,6 +50,7 @@ type spawnRequest struct {
 	Mode            string `json:"mode,omitempty"`
 	Harness         string `json:"harness,omitempty"`
 	Branch          string `json:"branch,omitempty"`
+	RepoName        string `json:"repoName,omitempty"`
 	Prompt          string `json:"prompt,omitempty"`
 	Model           string `json:"model,omitempty"`
 	Effort          string `json:"effort,omitempty"`
@@ -78,6 +80,10 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.standalone && strings.TrimSpace(opts.project) != "" {
 				return usageError{fmt.Errorf("--standalone and --project cannot be used together")}
+			}
+			opts.repo = strings.TrimSpace(opts.repo)
+			if opts.standalone && opts.repo != "" {
+				return usageError{fmt.Errorf("--repo cannot be used with --standalone")}
 			}
 			if opts.noTakeover && opts.claimPR == "" {
 				return usageError{fmt.Errorf("--no-takeover requires --claim-pr")}
@@ -172,6 +178,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				Harness:         opts.harness,
 				Mode:            opts.mode,
 				Branch:          opts.branch,
+				RepoName:        opts.repo,
 				Prompt:          opts.prompt,
 				Model:           strings.TrimSpace(opts.model),
 				Effort:          strings.TrimSpace(opts.effort),
@@ -235,6 +242,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.kind, "kind", "", "Session role: worker or orchestrator (default: worker)")
 	f.StringVar(&opts.mode, "mode", "", "Initial session interface: chat (structured agent connection) or tui (the agent's native terminal). Omitted uses the daemon default; compatible sessions can switch later.")
 	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for standalone or Scratch sessions)")
+	f.StringVar(&opts.repo, "repo", "", "Workspace projects only: a child repository's name (that child's own worktree alone), __root__ (the root alone) or all (the root with every child; default)")
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
 	f.StringVar(&opts.output, "output", "", "Deliverable for the session: artifact asks the agent to write a file in its artifact directory instead of opening a PR (default: ordinary task)")

@@ -147,7 +147,7 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	progress := m.startProvisionProgress(ctx, id, plan)
 	if reusePublishedWorkspace {
 		ws = workspaceInfo(in.record)
-		if in.projectKind == domain.ProjectKindWorkspace {
+		if in.projectKind == domain.ProjectKindWorkspace && workspaceChildRepoName(in.cfg.RepoName) == "" {
 			var rows []ports.WorkspaceRepoInfo
 			rows, _, err = m.workspaceProjectRows(ctx, in.record)
 			if err == nil {

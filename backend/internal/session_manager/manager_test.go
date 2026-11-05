@@ -1308,7 +1308,12 @@ func (w *fakeWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (po
 	if baseRef == "" {
 		baseRef = cfg.BaseBranch
 	}
-	return ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, BaseRef: baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: w.createRepoPath}, nil
+	repoPath := w.createRepoPath
+	if cfg.RepoPath != "" {
+		// The real adapter reports the child repository it created the worktree in.
+		repoPath = cfg.RepoPath
+	}
+	return ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, BaseRef: baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: repoPath}, nil
 }
 func (w *fakeWorkspace) CreateWorkspaceProject(_ context.Context, cfg ports.WorkspaceProjectConfig) (ports.WorkspaceProjectInfo, error) {
 	if w.projectErr != nil {
@@ -12292,5 +12297,133 @@ func TestResumeAgent_RuntimeFailureNamesRelaunchStep(t *testing.T) {
 	var relaunchErr *RelaunchError
 	if !errors.As(err, &relaunchErr) || relaunchErr.Step != "runtime" {
 		t.Fatalf("resume error = %v, want RelaunchError step runtime", err)
+	}
+}
+
+// TestCreateSessionWorkspaceMaterialisesOnlyNamedChild asserts SpawnConfig.RepoName
+// selects what a workspace-project session materialises: one named child as a
+// single-repository worktree (no root worktree), the root alone, or (empty or
+// "all") the root with every child nested in it, as upstream does.
+func TestCreateSessionWorkspaceMaterialisesOnlyNamedChild(t *testing.T) {
+	newWorkspaceManager := func() (*Manager, *fakeStore, *fakeWorkspace, domain.ProjectRecord) {
+		m, st, _, ws := newManager()
+		project := domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+		st.projects["mer"] = project
+		st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{
+			{Name: "a", RelativePath: "a"},
+			{Name: "b", RelativePath: "b"},
+			{Name: "c", RelativePath: "c"},
+		}
+		return m, st, ws, project
+	}
+	baseRefs := map[string]string{"/repo/mer/b": "refs/remotes/origin/b-main"}
+
+	t.Run("child", func(t *testing.T) {
+		m, st, ws, project := newWorkspaceManager()
+		info, projectInfo, err := m.createSessionWorkspace(ctx, project, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, RepoName: "b"}, "mer-1", "ao/mer-1", baseRefs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if projectInfo != nil {
+			t.Fatalf("child session materialised a workspace project: %#v", projectInfo)
+		}
+		if ws.createCount != 1 || ws.lastProjectCfg.RootRepoPath != "" {
+			t.Fatalf("Create calls = %d, project cfg = %#v; want one single-repository Create and no root", ws.createCount, ws.lastProjectCfg)
+		}
+		if ws.lastCfg.RepoPath != "/repo/mer/b" || ws.lastCfg.Branch != "ao/mer-1" || ws.lastCfg.BaseRef != "refs/remotes/origin/b-main" || ws.lastCfg.BaseBranch != "" {
+			t.Fatalf("child Create cfg = %#v", ws.lastCfg)
+		}
+		if info.Path == "" || info.RepoPath != "/repo/mer/b" || info.RepoName != "b" {
+			t.Fatalf("child workspace = %#v, want the child's own worktree", info)
+		}
+		if rows := st.worktrees["mer-1"]; len(rows) != 0 {
+			t.Fatalf("child session recorded workspace project rows: %#v", rows)
+		}
+	})
+
+	t.Run("root", func(t *testing.T) {
+		m, _, ws, project := newWorkspaceManager()
+		_, projectInfo, err := m.createSessionWorkspace(ctx, project, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, RepoName: domain.RootWorkspaceRepoName}, "mer-1", "ao/mer-1", baseRefs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ws.createCount != 0 || len(ws.lastProjectCfg.Repos) != 0 || ws.lastProjectCfg.RootRepoPath != "/repo/mer" {
+			t.Fatalf("Create calls = %d, project cfg = %#v; want the root alone", ws.createCount, ws.lastProjectCfg)
+		}
+		if projectInfo == nil || len(projectInfo.Worktrees) != 1 || projectInfo.Worktrees[0].RepoName != domain.RootWorkspaceRepoName {
+			t.Fatalf("root session worktrees = %#v", projectInfo)
+		}
+	})
+
+	for _, repoName := range []string{"", "all"} {
+		t.Run("all/"+repoName, func(t *testing.T) {
+			m, _, ws, project := newWorkspaceManager()
+			_, projectInfo, err := m.createSessionWorkspace(ctx, project, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, RepoName: repoName}, "mer-1", "ao/mer-1", baseRefs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ws.createCount != 0 || len(ws.lastProjectCfg.Repos) != 3 {
+				t.Fatalf("Create calls = %d, project repos = %#v; want root plus every child", ws.createCount, ws.lastProjectCfg.Repos)
+			}
+			if projectInfo == nil || len(projectInfo.Worktrees) != 4 {
+				t.Fatalf("worktrees = %#v, want root and three children", projectInfo)
+			}
+			for _, wt := range projectInfo.Worktrees {
+				if wt.Branch != "ao/mer-1" {
+					t.Fatalf("worktree %s branch = %q, want the shared session branch", wt.RepoName, wt.Branch)
+				}
+			}
+		})
+	}
+
+	t.Run("unknown", func(t *testing.T) {
+		m, _, ws, project := newWorkspaceManager()
+		_, _, err := m.createSessionWorkspace(ctx, project, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, RepoName: "nope"}, "mer-1", "ao/mer-1", baseRefs)
+		if !errors.Is(err, ErrUnknownWorkspaceRepo) {
+			t.Fatalf("err = %v, want ErrUnknownWorkspaceRepo", err)
+		}
+		if ws.createCount != 0 || ws.lastProjectCfg.RootRepoPath != "" {
+			t.Fatalf("unknown repo materialised something: creates=%d project=%#v", ws.createCount, ws.lastProjectCfg)
+		}
+	})
+
+	t.Run("child branch checked out elsewhere", func(t *testing.T) {
+		m, _, ws, project := newWorkspaceManager()
+		ws.createErr = fmt.Errorf("gitworktree: %w", ports.ErrWorkspaceBranchCheckedOutElsewhere)
+		_, _, err := m.createSessionWorkspace(ctx, project, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, RepoName: "b"}, "mer-1", "ao/mer-1", baseRefs)
+		if !errors.Is(err, ports.ErrWorkspaceBranchCheckedOutElsewhere) {
+			t.Fatalf("err = %v, want ErrWorkspaceBranchCheckedOutElsewhere from the child repository", err)
+		}
+	})
+}
+
+// TestRestoreSessionWorkspaceKeepsRepoNameLayout asserts restore rebuilds what
+// the spawn materialised: a child session's own worktree in the child
+// repository, and a root-only session's root without children.
+func TestRestoreSessionWorkspaceKeepsRepoNameLayout(t *testing.T) {
+	m, st, _, ws := newManager()
+	project := domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.projects["mer"] = project
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "a", RelativePath: "a"}, {Name: "b", RelativePath: "b"}}
+
+	child := domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, RepoName: "b",
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", WorkspaceRepoPath: "/repo/mer/b", Branch: "ao/mer-1"}}
+	got, err := m.restoreSessionWorkspace(ctx, project, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.restoreConfigs) != 1 || ws.restoreConfigs[0].RepoPath != "/repo/mer/b" || ws.restoreConfigs[0].BaseBranch != "" || got.Path != "/ws/mer-1" {
+		t.Fatalf("child restore configs = %#v, workspace = %#v", ws.restoreConfigs, got)
+	}
+
+	root := domain.SessionRecord{ID: "mer-2", ProjectID: "mer", Kind: domain.KindWorker, RepoName: domain.RootWorkspaceRepoName,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-2", Branch: "ao/mer-2"}}
+	st.worktrees["mer-2"] = []domain.SessionWorktreeRecord{{SessionID: "mer-2", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-2", WorktreePath: "/ws/mer-2"}}
+	rows, err := m.workspaceProjectRestoreRows(ctx, project, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].RepoName != domain.RootWorkspaceRepoName {
+		t.Fatalf("root-only restore rows = %#v, want the root alone", rows)
 	}
 }

@@ -1142,7 +1142,9 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	asyncChat := cfg.Async && mode == domain.SessionModeChat && m.chat != nil && (cfg.Kind == domain.KindOrchestrator || cfg.Kind == domain.KindWorker)
 
 	var prep *taskPreparation
-	if cfg.AutomationRunID == nil && cfg.Branch == "" {
+	// A speculative preparation materialised the whole workspace, so only a
+	// spawn that asks for all of it can claim one.
+	if cfg.AutomationRunID == nil && cfg.Branch == "" && selectsAllWorkspaceRepos(cfg.RepoName) {
 		prep = m.claimTaskPreparation(cfg.TaskPreparation, cfg.ProjectID)
 	}
 	var rec domain.SessionRecord
@@ -2003,11 +2005,14 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		projectKind = domain.ProjectKindScratch
 	}
 	if projectKind != domain.ProjectKindWorkspace {
+		if !selectsAllWorkspaceRepos(cfg.RepoName) {
+			return ports.WorkspaceInfo{}, nil, fmt.Errorf("%w: %q: project %q is not a workspace project", ErrUnknownWorkspaceRepo, cfg.RepoName, project.ID)
+		}
 		baseBranch := project.Config.WorktreeBaseBranch()
 		if projectKind == domain.ProjectKindScratch {
 			baseBranch = ""
 		}
-		workspaceCfg := ports.WorkspaceConfig{
+		ws, err := m.createSingleRepoWorkspace(ctx, cfg, ports.WorkspaceConfig{
 			ProjectID:     cfg.ProjectID,
 			SessionID:     id,
 			Kind:          cfg.Kind,
@@ -2016,13 +2021,7 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 			FreshBranch:   cfg.TaskPreparation != "",
 			BaseBranch:    baseBranch,
 			BaseRef:       baseRefs[filepath.Clean(project.Path)],
-		}
-		ws, err := m.workspace.Create(ctx, workspaceCfg)
-		if errors.Is(err, ports.ErrWorkspaceBranchCheckedOutElsewhere) && cfg.Kind == domain.KindOrchestrator && cfg.Branch == "" {
-			// Leave the occupied worktree intact; the adapter selects an unused suffix.
-			workspaceCfg.FreshBranch = true
-			ws, err = m.workspace.Create(ctx, workspaceCfg)
-		}
+		})
 		return ws, nil, err
 	}
 	workspaceProject, ok := m.workspace.(ports.WorkspaceProject)
@@ -2033,6 +2032,41 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 	if err != nil {
 		return ports.WorkspaceInfo{}, nil, err
 	}
+	if child := workspaceChildRepoName(cfg.RepoName); child != "" {
+		// A child session is that child's own single-repository worktree on the
+		// shared session branch: no root worktree, nothing nested.
+		for _, repo := range repos {
+			if repo.Name != child {
+				continue
+			}
+			repoPath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
+			if repo.GitStatus == domain.GitStatusNeedsInit {
+				if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
+					return ports.WorkspaceInfo{}, nil, fmt.Errorf("%w: %q is not a git repository", ErrUnknownWorkspaceRepo, child)
+				}
+			}
+			ws, err := m.createSingleRepoWorkspace(ctx, cfg, ports.WorkspaceConfig{
+				ProjectID:     cfg.ProjectID,
+				SessionID:     id,
+				Kind:          cfg.Kind,
+				SessionPrefix: sessionPrefix(project),
+				Branch:        branch,
+				FreshBranch:   cfg.TaskPreparation != "",
+				// As for a nested child: the adapter resolves this repository's
+				// own default, and BaseRef keeps the target resolved before the
+				// refresh.
+				BaseBranch: "",
+				BaseRef:    baseRefs[filepath.Clean(repoPath)],
+				RepoPath:   repoPath,
+			})
+			if ws.Path != "" {
+				ws.RepoName = child
+			}
+			return ws, nil, err
+		}
+		return ports.WorkspaceInfo{}, nil, fmt.Errorf("%w: %q is not registered in workspace project %q", ErrUnknownWorkspaceRepo, child, project.ID)
+	}
+	rootOnly := cfg.RepoName == domain.RootWorkspaceRepoName
 	childRepos := make([]ports.WorkspaceProjectRepoConfig, 0, len(repos))
 	assets := make([]ports.WorkspaceProjectAssetConfig, 0)
 	for _, repo := range repos {
@@ -2045,6 +2079,9 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 				RelativePath: repo.RelativePath,
 				SourcePath:   repoPath,
 			})
+			continue
+		}
+		if rootOnly {
 			continue
 		}
 		repoPath := filepath.Join(project.Path, filepath.FromSlash(repo.RelativePath))
@@ -2126,6 +2163,39 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		}
 	}
 	return info.Root, &info, err
+}
+
+// createSingleRepoWorkspace creates one repository's worktree: a single-repo
+// or scratch project's, or one workspace child's (workspaceCfg.RepoPath set).
+func (m *Manager) createSingleRepoWorkspace(ctx context.Context, cfg ports.SpawnConfig, workspaceCfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	ws, err := m.workspace.Create(ctx, workspaceCfg)
+	if errors.Is(err, ports.ErrWorkspaceBranchCheckedOutElsewhere) && cfg.Kind == domain.KindOrchestrator && cfg.Branch == "" {
+		// Leave the occupied worktree intact; the adapter selects an unused suffix.
+		workspaceCfg.FreshBranch = true
+		ws, err = m.workspace.Create(ctx, workspaceCfg)
+	}
+	return ws, err
+}
+
+// ErrUnknownWorkspaceRepo reports a spawn whose RepoName names no repository
+// the session can materialise: not a registered child of the workspace
+// project, a child that is not a git repository, or any name for a project
+// that is not a workspace project.
+var ErrUnknownWorkspaceRepo = errors.New("unknown workspace repository")
+
+// selectsAllWorkspaceRepos reports whether repoName asks for upstream's layout:
+// the root with every child nested in it.
+func selectsAllWorkspaceRepos(repoName string) bool {
+	return repoName == "" || repoName == domain.WorkspaceRepoNameAll
+}
+
+// workspaceChildRepoName returns the workspace child a session's RepoName
+// selects, or "" when it selects the root alone or everything.
+func workspaceChildRepoName(repoName string) string {
+	if selectsAllWorkspaceRepos(repoName) || repoName == domain.RootWorkspaceRepoName {
+		return ""
+	}
+	return repoName
 }
 
 func resolveSpawnDiffBase(ctx context.Context, root, defaultBranch string) (string, string) {
@@ -4459,7 +4529,7 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 		return
 	}
 	var ws ports.WorkspaceInfo
-	restoredWorkspaceProject := project.Kind.WithDefault() == domain.ProjectKindWorkspace
+	restoredWorkspaceProject := project.Kind.WithDefault() == domain.ProjectKindWorkspace && workspaceChildRepoName(rec.RepoName) == ""
 	var projectRows []ports.WorkspaceRepoInfo
 	if restoredWorkspaceProject {
 		var rowErr error
@@ -4476,16 +4546,7 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 		ws = workspaceInfoFromRepoInfo(root)
 	} else {
 		var restoreErr error
-		ws, restoreErr = m.workspace.Restore(ctx, ports.WorkspaceConfig{
-			ProjectID:     rec.ProjectID,
-			SessionID:     rec.ID,
-			Kind:          rec.Kind,
-			SessionPrefix: sessionPrefix(project),
-			Branch:        rec.Metadata.Branch,
-			BaseBranch:    project.Config.WorktreeBaseBranch(),
-			BaseRef:       rec.Metadata.DiffBaseRef,
-			Path:          rec.Metadata.WorkspacePath,
-		})
+		ws, restoreErr = m.workspace.Restore(ctx, singleRepoRestoreConfig(project, rec))
 		if restoreErr != nil {
 			m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", restoreErr)
 			return
@@ -4591,21 +4652,12 @@ func (m *Manager) markSessionWorktreesActive(ctx context.Context, rows []domain.
 }
 
 func (m *Manager) restoreSessionWorkspace(ctx context.Context, project domain.ProjectRecord, rec domain.SessionRecord) (ports.WorkspaceInfo, error) {
-	if projectKindForSession(project, rec.ProjectID) != domain.ProjectKindWorkspace {
+	if projectKindForSession(project, rec.ProjectID) != domain.ProjectKindWorkspace || workspaceChildRepoName(rec.RepoName) != "" {
 		recreated, err := workspacePathMissing(rec.Metadata.WorkspacePath)
 		if err != nil {
 			return ports.WorkspaceInfo{}, err
 		}
-		ws, err := m.workspace.Restore(ctx, ports.WorkspaceConfig{
-			ProjectID:     rec.ProjectID,
-			SessionID:     rec.ID,
-			Kind:          rec.Kind,
-			SessionPrefix: sessionPrefix(project),
-			Branch:        rec.Metadata.Branch,
-			BaseBranch:    project.Config.WorktreeBaseBranch(),
-			BaseRef:       rec.Metadata.DiffBaseRef,
-			Path:          rec.Metadata.WorkspacePath,
-		})
+		ws, err := m.workspace.Restore(ctx, singleRepoRestoreConfig(project, rec))
 		if err != nil {
 			return ports.WorkspaceInfo{}, err
 		}
@@ -4662,6 +4714,27 @@ func (m *Manager) provisionRecreatedWorkspace(ctx context.Context, project domai
 	return m.provisionWorkspace(ctx, project, workspacePath)
 }
 
+// singleRepoRestoreConfig restores one repository's worktree: a single-repo
+// or scratch session's, or a workspace child session's (spawned with --repo
+// <child>), which lives in that child's repository and resolves its own default.
+func singleRepoRestoreConfig(project domain.ProjectRecord, rec domain.SessionRecord) ports.WorkspaceConfig {
+	cfg := ports.WorkspaceConfig{
+		ProjectID:     rec.ProjectID,
+		SessionID:     rec.ID,
+		Kind:          rec.Kind,
+		SessionPrefix: sessionPrefix(project),
+		Branch:        rec.Metadata.Branch,
+		BaseBranch:    project.Config.WorktreeBaseBranch(),
+		BaseRef:       rec.Metadata.DiffBaseRef,
+		Path:          rec.Metadata.WorkspacePath,
+	}
+	if workspaceChildRepoName(rec.RepoName) != "" {
+		cfg.BaseBranch = ""
+		cfg.RepoPath = rec.Metadata.WorkspaceRepoPath
+	}
+	return cfg
+}
+
 func workspacePathMissing(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -4705,6 +4778,10 @@ func (m *Manager) workspaceProjectRestoreRowsFromMarkers(ctx context.Context, pr
 		SessionID: rec.ID,
 		ProjectID: rec.ProjectID,
 	}}
+	if rec.RepoName == domain.RootWorkspaceRepoName {
+		// A root-only session (--repo __root__) never had children to restore.
+		return out, nil
+	}
 	for _, repo := range childRepos {
 		out = append(out, ports.WorkspaceRepoInfo{
 			RepoName:     repo.Name,
@@ -5735,6 +5812,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 		UpdatedAt:         now,
 		Harness:           cfg.Harness,
 		DisplayName:       cfg.DisplayName,
+		RepoName:          cfg.RepoName,
 		Activity:          domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
 		// Resolved before this point and persisted here. There is no UPDATE
 		// statement that can change it afterwards.

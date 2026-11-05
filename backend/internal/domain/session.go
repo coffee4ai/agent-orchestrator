@@ -288,6 +288,11 @@ type SessionRecord struct {
 	ReviewerConfig    AgentConfig     `json:"reviewerConfig,omitempty"`
 	AutoReviewEnabled bool            `json:"autoReviewEnabled"`
 	DisplayName       string          `json:"displayName,omitempty"`
+	// RepoName is what a workspace-project session was spawned on, stored
+	// verbatim from the spawn request: a child repository's name (that child's
+	// worktree alone), RootWorkspaceRepoName (the root alone), or
+	// WorkspaceRepoNameAll / empty (the root with every child nested in it).
+	RepoName string `json:"repoName,omitempty"`
 	// Mode is the session's currently committed conversation controller. Every
 	// send, restore, kill, and reaper decision dispatches from it. Only the
 	// durable interface-transition coordinator may change it; the daemon default

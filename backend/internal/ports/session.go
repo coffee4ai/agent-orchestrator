@@ -86,6 +86,11 @@ type SpawnConfig struct {
 	// Ignored for TUI mode. Orchestrator callers serialize project-scoped
 	// starts and reuse the published session while its controller is starting.
 	Async bool
+	// RepoName selects what a workspace-project session materialises: a child
+	// repository's name (that child alone, as a single-repository worktree),
+	// domain.RootWorkspaceRepoName (the root alone), or domain.WorkspaceRepoNameAll /
+	// empty (the root with every child nested in it). It is stored verbatim.
+	RepoName string
 	// TaskPreparation is the opaque speculative-worktree token returned while
 	// the desktop's New Task dialog is open. It is a hint: an absent or expired
 	// token falls back to ordinary workspace creation.

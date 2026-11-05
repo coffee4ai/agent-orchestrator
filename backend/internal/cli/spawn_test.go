@@ -1172,3 +1172,65 @@ func TestSpawnEffortSurfacesDaemonUnsupportedEffort(t *testing.T) {
 		t.Fatalf("err=%v, want daemon UNSUPPORTED_EFFORT envelope", err)
 	}
 }
+
+// TestSpawnRepoFlag asserts `ao spawn --repo` forwards the workspace child (or
+// the root, or all) as repoName, and that a standalone session refuses it.
+func TestSpawnRepoFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		wantRepo  any
+		wantUsage string
+	}{
+		{name: "child", args: []string{"--repo", "api"}, wantRepo: "api"},
+		{name: "root", args: []string{"--repo", "__root__"}, wantRepo: "__root__"},
+		{name: "all", args: []string{"--repo", "all"}, wantRepo: "all"},
+		{name: "omitted", args: nil, wantRepo: nil},
+		{name: "standalone", args: []string{"--standalone", "--repo", "api"}, wantUsage: "--repo cannot be used with --standalone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := setConfigEnv(t)
+			var req map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+					_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","kind":"workspace","path":"/repo/demo"}}`)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure":
+					_, _ = io.WriteString(w, authorizedAgentsJSON("codex"))
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatal(err)
+					}
+					_, _ = io.WriteString(w, `{"session":{"id":"demo-21","status":"idle"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			writeRunFileFor(t, cfg, srv)
+
+			args := []string{"spawn", "--agent", "codex", "--name", "worker"}
+			if tc.wantUsage == "" {
+				args = append(args, "--project", "demo")
+			}
+			args = append(args, tc.args...)
+			_, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, args...)
+			if tc.wantUsage != "" {
+				if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), tc.wantUsage) {
+					t.Fatalf("err=%v exit=%d, want usage error %q", err, ExitCode(err), tc.wantUsage)
+				}
+				if req != nil {
+					t.Fatalf("usage error still posted a spawn: %#v", req)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("spawn failed: %v stderr=%s", err, errOut)
+			}
+			if got := req["repoName"]; got != tc.wantRepo {
+				t.Fatalf("repoName = %#v, want %#v; request=%#v", got, tc.wantRepo, req)
+			}
+		})
+	}
+}
