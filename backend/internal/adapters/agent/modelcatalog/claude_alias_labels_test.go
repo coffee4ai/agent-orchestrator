@@ -82,6 +82,7 @@ func TestResolveClaudeAlias(t *testing.T) {
 		{"haiku", "haiku", catalog, "claude-haiku-5-5", true},
 		{"fable", "fable", catalog, "claude-fable-5-1", true},
 		{"alias is case and space insensitive", " Sonnet ", catalog, "claude-sonnet-5-5", true},
+		{"suffixed alias is left to the caller", "opus[1m]", catalog, "", false},
 		{"unknown alias", "mythos", catalog, "", false},
 		{"family absent from catalog", "haiku", ports.AgentModelCatalog{Models: catalog.Models[:3]}, "", false},
 		{"full id passes through", "claude-opus-5-1", catalog, "claude-opus-5-1", true},
