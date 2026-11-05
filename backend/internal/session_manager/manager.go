@@ -426,6 +426,7 @@ type Manager struct {
 	agentBrowserURL             string
 	agentBrowserToken           string
 	agentAccounts               ports.AgentAccountLaunchEnv
+	credentialRejections        CredentialRejections
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
 	attachments                 *attachmentstore.Store
@@ -647,6 +648,16 @@ func (m *Manager) SetAgentReadiness(provider ports.AgentReadinessProvider) {
 // Nil launches every agent under the computer's own CLI login.
 func (m *Manager) SetAgentAccounts(accounts ports.AgentAccountLaunchEnv) {
 	m.agentAccounts = accounts
+}
+
+// CredentialRejections names the environment variables whose credential the
+// provider rejected for a launch with this environment (names, never values).
+type CredentialRejections func(ctx context.Context, env map[string]string) []string
+
+// SetCredentialRejections completes daemon wiring before request handling
+// begins. Nil leaves every credential variable untouched.
+func (m *Manager) SetCredentialRejections(rejections CredentialRejections) {
+	m.credentialRejections = rejections
 }
 
 // SetPersistentHostReconcileDone fences cold Chat resumes until startup has
@@ -6310,6 +6321,7 @@ func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectI
 		env[EnvAgentBrowserToken] = m.agentBrowserToken
 	}
 	accountErr := m.applyAgentAccountEnv(id, accountID, env, caseInsensitive)
+	m.dropRejectedCredentials(env, caseInsensitive)
 	path, err := hookPATHForOS(m.executable, os.Getenv, projectEnv, m.dataDir, caseInsensitive)
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",
@@ -6342,6 +6354,21 @@ func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, en
 		setProtectedEnv(env, key, value, caseInsensitive)
 	}
 	return err
+}
+
+// dropRejectedCredentials blanks every credential variable the provider
+// rejected, so the agent falls through to the working login instead of
+// failing on a stale key. The entry is set empty rather than deleted: a
+// missing key would let the child inherit the daemon's own value.
+func (m *Manager) dropRejectedCredentials(env map[string]string, caseInsensitive bool) {
+	if m.credentialRejections == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, name := range m.credentialRejections(ctx, env) {
+		setProtectedEnv(env, name, "", caseInsensitive)
+	}
 }
 
 func deleteProtectedEnv(env map[string]string, key string, caseInsensitive bool) {

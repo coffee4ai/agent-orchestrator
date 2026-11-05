@@ -154,7 +154,7 @@ func (p *Plugin) authStatusAndDiagnostics(ctx context.Context, workingDir string
 		report, ok, step := p.claudeCLIAuthReportDiagnostic(ctx, binary, cwd, env)
 		steps = append(steps, step)
 		return report, ok
-	})
+	}, true)
 	reportedProvider, _ := agentcreds.ParseProvider(resolved.report.APIProvider)
 	// The CLI report speaks for the agent's credential only when it answered
 	// for the same provider.
@@ -179,6 +179,9 @@ func (p *Plugin) authStatusAndDiagnostics(ctx context.Context, workingDir string
 	// Rungs 1 and 2 — the provider gate and the network probe. This is the
 	// only rung that can prove a credential works, so it is the only one
 	// allowed to return Authorized.
+	if step, rejected := rejectedCredentialStep(resolved); rejected {
+		steps = append(steps, step)
+	}
 	status, ok, step := p.probeResolvedAuthDiagnostics(ctx, resolved, fresh)
 	steps = append(steps, step)
 	if ok {
@@ -223,12 +226,16 @@ func (p *Plugin) resolveProviderContext(
 	binary, workingDir string,
 	env map[string]string,
 	reportFn func(context.Context, string, string, map[string]string) (claudeAuthReport, bool),
+	validate bool,
 ) claudeProviderContext {
 	opts := (agentcreds.ResolveOptions{
 		AllowKeychain: true,
 		WorkingDir:    workingDir,
 		CommandEnv:    env,
 	}).WithClaudeSettings(ctx)
+	if validate {
+		opts.Validate = p.ladderValidator()
+	}
 	report, cliOK := reportFn(ctx, binary, workingDir, opts.CommandEnv)
 	reported := ""
 	if cliOK {
@@ -243,6 +250,76 @@ func (p *Plugin) resolveProviderContext(
 		opts: opts, report: report, cliOK: cliOK, provider: provider,
 		providerOK: providerOK, credential: credential, found: found,
 	}
+}
+
+// ladderValidator is the production ResolveOptions.Validate: one GET against
+// the provider's auth check, recorded in the verdict cache so the probe that
+// follows for the chosen credential does not repeat it.
+func (p *Plugin) ladderValidator() func(context.Context, agentcreds.Credential) (bool, int) {
+	return func(ctx context.Context, cred agentcreds.Credential) (bool, int) {
+		if cached, ok := p.authCache().get(cred.Fingerprint(), cred.Provider); ok {
+			return cached.State == agentcreds.StateValid, cached.HTTPStatus
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, agentcreds.DefaultTimeout)
+		defer cancel()
+		result := claudeValidator().Validate(probeCtx, cred)
+		if result.State == agentcreds.StateInvalid && agentcreds.IsResolverBug(result.Detail) {
+			return false, 0
+		}
+		p.authCache().put(result)
+		return result.State == agentcreds.StateValid, result.HTTPStatus
+	}
+}
+
+// RejectedCredentialEnv names the environment variables whose credential the
+// provider rejected with 401 for a launch with this working directory and
+// environment, while a later source in the ladder works. A launch removes them
+// from the runtime environment so the agent cannot inherit the rejected key.
+// Names only; empty when nothing was rejected or the provider cannot be asked.
+func (p *Plugin) RejectedCredentialEnv(ctx context.Context, workingDir string, env map[string]string) []string {
+	opts := (agentcreds.ResolveOptions{
+		AllowKeychain: true,
+		WorkingDir:    workingDir,
+		CommandEnv:    env,
+	}).WithClaudeSettings(ctx)
+	opts.Validate = p.ladderValidator()
+	provider, ok := agentcreds.ResolveProvider("", opts)
+	if !ok || !agentcreds.ValidatesProvider(provider) {
+		return nil
+	}
+	credential, found := agentcreds.ResolveLocal(ctx, provider, opts)
+	if !found {
+		return nil
+	}
+	return credential.RejectedEnvVars()
+}
+
+// rejectedCredentialStep reports that the resolver skipped a credential the
+// provider rejected with 401. Variable names only, never values.
+func rejectedCredentialStep(resolved claudeProviderContext) (domain.AgentAuthDiagnostic, bool) {
+	reason := resolved.credential.Diagnostic()
+	if !resolved.found || reason == "" {
+		return domain.AgentAuthDiagnostic{}, false
+	}
+	step := domain.NewAgentAuthDiagnostic("provider_validation", "credential_rejected_fallback")
+	step.Reason = reason
+	step.NextStep = rejectedCredentialFix(resolved.credential.RejectedSources)
+	step.Provider = string(resolved.provider)
+	step.Source = resolved.credential.Source
+	return step, true
+}
+
+// rejectedCredentialFix names the repair for each rejected source.
+func rejectedCredentialFix(rejected []string) string {
+	fixes := make([]string, 0, len(rejected))
+	for _, source := range rejected {
+		if source == "keychain" || source == "credentials-file" {
+			fixes = append(fixes, "sign in to Claude Code again to refresh the "+source+" login")
+			continue
+		}
+		fixes = append(fixes, "unset "+source+" or refresh it")
+	}
+	return strings.Join(fixes, "; ")
 }
 
 // probeAuthStatus runs the provider gate and the network probe.
@@ -579,7 +656,7 @@ var claudeModelAuthReport = func(ctx context.Context, binary, workingDir string,
 func ProviderCatalogFingerprint(ctx context.Context, binary, workingDir string, env map[string]string) string {
 	probeCtx, cancel := context.WithTimeout(ctx, claudeAuthProbeTimeout)
 	defer cancel()
-	resolved := (&Plugin{}).resolveProviderContext(probeCtx, binary, workingDir, env, claudeModelAuthReport)
+	resolved := (&Plugin{}).resolveProviderContext(probeCtx, binary, workingDir, env, claudeModelAuthReport, false)
 	reported := ""
 	if resolved.cliOK {
 		reported = strings.TrimSpace(resolved.report.APIProvider)
@@ -605,7 +682,7 @@ func ProviderCatalogFingerprint(ctx context.Context, binary, workingDir string, 
 func ProviderModels(ctx context.Context, binary, workingDir string, env map[string]string) ([]ports.AgentModelInfo, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, agentcreds.DefaultTimeout)
 	defer cancel()
-	resolved := (&Plugin{}).resolveProviderContext(probeCtx, binary, workingDir, env, claudeModelAuthReport)
+	resolved := (&Plugin{}).resolveProviderContext(probeCtx, binary, workingDir, env, claudeModelAuthReport, false)
 	return providerModelsFor(probeCtx, resolved)
 }
 

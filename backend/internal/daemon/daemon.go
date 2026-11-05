@@ -590,6 +590,14 @@ func Run(buildVersion string) error {
 	}); ok {
 		wired.SetAgentAccounts(agentAccountSvc)
 	}
+	if wired, ok := sessMgr.(interface {
+		SetCredentialRejections(sessionmanager.CredentialRejections)
+	}); ok {
+		claude := &claudecodeagent.Plugin{}
+		wired.SetCredentialRejections(func(ctx context.Context, env map[string]string) []string {
+			return claude.RejectedCredentialEnv(ctx, "", env)
+		})
+	}
 	if stopper, ok := sessMgr.(interface {
 		ExitAgentsOnAccount(context.Context, string) error
 	}); ok {

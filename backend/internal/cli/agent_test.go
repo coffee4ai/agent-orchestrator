@@ -113,3 +113,33 @@ func TestReadinessInventoryProjectsAuthNotApplicableAsLegacyAuthorized(t *testin
 		t.Fatalf("legacy authorized projection = %#v", inv.Authorized)
 	}
 }
+
+const rejectedFallbackReadinessJSON = `{"agents":[{"id":"claude-code","label":"Claude Code",` +
+	`"installation":{"state":"installed","freshness":"fresh","reasonCode":"test","reason":"test"},` +
+	`"authentication":{"state":"authorized","freshness":"fresh","reasonCode":"test","reason":"test","diagnostics":[` +
+	`{"method":"provider_validation","code":"credential_rejected_fallback",` +
+	`"reason":"env credential rejected (401); using credentials-file",` +
+	`"nextStep":"unset ANTHROPIC_API_KEY or refresh it","source":"credentials-file"}]},` +
+	`"effectiveReadiness":"ready","usageCount":0}]}`
+
+func TestAgentListShowsRejectedCredentialDiagnostic(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure" {
+			_, _ = io.WriteString(w, rejectedFallbackReadinessJSON)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "agent", "ls")
+	if err != nil {
+		t.Fatalf("agent ls failed: %v stderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "authorized (env credential rejected (401); using credentials-file)") {
+		t.Fatalf("AUTH column missing the diagnostic:\n%s", out)
+	}
+}

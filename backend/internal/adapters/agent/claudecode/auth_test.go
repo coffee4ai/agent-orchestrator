@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -805,5 +808,60 @@ func TestProviderModelsDoesNotClaimConfiguredFoundryDeployments(t *testing.T) {
 	})
 	if err == nil || len(models) != 0 {
 		t.Fatalf("models/error = %+v/%v, want unsupported Foundry discovery", models, err)
+	}
+}
+
+func TestRejectedCredentialEnvNamesTheRejectedVariableOnly(t *testing.T) {
+	clearClaudeCredentialEnv(t)
+	InvalidateAuthCache()
+	t.Cleanup(InvalidateAuthCache)
+	configDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configDir, ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"stored-token"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var seenAPIKeys []string
+	server := withStubValidator(t, func(w http.ResponseWriter, r *http.Request) {
+		if key := r.Header.Get("x-api-key"); key != "" {
+			seenAPIKeys = append(seenAPIKeys, key)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	env := map[string]string{
+		"ANTHROPIC_API_KEY": "stale-key", "ANTHROPIC_BASE_URL": server.URL, "CLAUDE_CONFIG_DIR": configDir,
+	}
+	got := (&Plugin{}).RejectedCredentialEnv(context.Background(), t.TempDir(), env)
+	if !reflect.DeepEqual(got, []string{"ANTHROPIC_API_KEY"}) {
+		t.Fatalf("rejected = %v, want [ANTHROPIC_API_KEY]", got)
+	}
+	if len(seenAPIKeys) == 0 {
+		t.Fatal("the env credential was never probed")
+	}
+}
+
+func TestRejectedCredentialStepNamesVariablesNotValues(t *testing.T) {
+	resolved := claudeProviderContext{
+		provider: agentcreds.ProviderFirstParty, found: true,
+		credential: agentcreds.Credential{
+			Source: "credentials-file", Secret: "secret-value", RejectedSources: []string{"ANTHROPIC_API_KEY"},
+		},
+	}
+	step, ok := rejectedCredentialStep(resolved)
+	if !ok {
+		t.Fatal("expected a diagnostic")
+	}
+	if step.Code != "credential_rejected_fallback" ||
+		step.Reason != "env credential rejected (401); using credentials-file" ||
+		step.NextStep != "unset ANTHROPIC_API_KEY or refresh it" {
+		t.Fatalf("step = %+v", step)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", step), "secret-value") {
+		t.Fatal("diagnostic leaked a credential value")
+	}
+	resolved.credential.RejectedSources = nil
+	if _, ok := rejectedCredentialStep(resolved); ok {
+		t.Fatal("no rejection, no diagnostic")
 	}
 }

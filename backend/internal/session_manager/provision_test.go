@@ -1009,3 +1009,43 @@ func TestRuntimeEnvOmitsAgentBrowserConfigOnDesktopHosts(t *testing.T) {
 		t.Fatalf("%s = %q on a desktop host", EnvAgentBrowserToken, value)
 	}
 }
+
+func TestRuntimeEnvDropsRejectedCredential(t *testing.T) {
+	var seen string
+	manager := &Manager{
+		dataDir:    "/data",
+		executable: func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		credentialRejections: func(_ context.Context, env map[string]string) []string {
+			seen = env["ANTHROPIC_API_KEY"]
+			return []string{"ANTHROPIC_API_KEY"}
+		},
+	}
+	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+		"ANTHROPIC_API_KEY": "rejected-value", "KEEP_ME": "kept",
+	})
+	if seen != "rejected-value" {
+		t.Fatalf("the rejection check must see the launch environment")
+	}
+	// An empty entry overrides the daemon's own inherited value; deleting the
+	// key would let the child inherit the rejected credential.
+	if value, present := env["ANTHROPIC_API_KEY"]; !present || value != "" {
+		t.Fatalf("rejected credential reached the runtime: present=%v nonEmpty=%v", present, value != "")
+	}
+	if env["KEEP_ME"] != "kept" {
+		t.Fatalf("unrelated variable lost: %v", env)
+	}
+}
+
+func TestRuntimeEnvKeepsCredentialWhenNothingRejected(t *testing.T) {
+	manager := &Manager{
+		dataDir:              "/data",
+		executable:           func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
+		logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+		credentialRejections: func(context.Context, map[string]string) []string { return nil },
+	}
+	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{"ANTHROPIC_API_KEY": "good"})
+	if env["ANTHROPIC_API_KEY"] != "good" {
+		t.Fatalf("a valid credential must pass through: %v", env["ANTHROPIC_API_KEY"] != "")
+	}
+}

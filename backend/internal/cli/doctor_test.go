@@ -859,3 +859,29 @@ func TestDoctorACPRuntimeCheckWarnsWhenUnresolved(t *testing.T) {
 		t.Fatalf("check = %+v, want WARN naming AO_ACP_RUNTIME_DIR", check)
 	}
 }
+
+func TestDoctorNamesTheFixForARejectedCredential(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure" {
+			_, _ = io.WriteString(w, rejectedFallbackReadinessJSON)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, nil)
+	c.deps.ProcessAlive = func(int) bool { return true }
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "claude-credential")
+	if check.Level != doctorWarn || check.Section != doctorSectionAgents {
+		t.Fatalf("check = %+v, want an agent-section WARN", check)
+	}
+	for _, want := range []string{"env credential rejected (401); using credentials-file", "unset ANTHROPIC_API_KEY or refresh it"} {
+		if !strings.Contains(check.Message, want) {
+			t.Fatalf("message %q missing %q", check.Message, want)
+		}
+	}
+}

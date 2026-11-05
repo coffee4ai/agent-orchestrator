@@ -79,6 +79,28 @@ type claudeLaunchAuthenticator interface {
 	ValidateLaunchAuth(context.Context, string, map[string]string) (ports.AgentAuthStatus, error)
 }
 
+// claudeCredentialRejecter is implemented by a plugin that can tell which
+// environment credentials the provider rejected while a later source works.
+type claudeCredentialRejecter interface {
+	RejectedCredentialEnv(context.Context, string, map[string]string) []string
+}
+
+// dropRejectedClaudeCredentials blanks each rejected credential variable in
+// the runtime env so the adapter cannot send the stale key. The entry is empty
+// rather than deleted because the runtime env is merged over the daemon's own
+// environment, where a missing key would be inherited. input is the launch env
+// the rejection check reads; env is the map being built and is the only one
+// changed.
+func dropRejectedClaudeCredentials(ctx context.Context, plugin claudePlugin, workingDir string, input, env map[string]string) {
+	rejecter, ok := plugin.(claudeCredentialRejecter)
+	if !ok {
+		return
+	}
+	for _, name := range rejecter.RejectedCredentialEnv(ctx, workingDir, input) {
+		env[name] = ""
+	}
+}
+
 // New constructs the Claude Code ACP driver over the existing Claude agent
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
@@ -153,6 +175,7 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 					"authDuration", authDuration, "modelsDuration", time.Since(modelsStarted))
 			}
 			env := claudeACPLaunchEnv(cfg.Env, claudeBinary, cfg.Model, models)
+			dropRejectedClaudeCredentials(ctx, plugin, cfg.WorkspacePath, cfg.Env, env)
 			return acpdriver.Launch{
 				Command: runtimeLaunch.command,
 				Args:    runtimeLaunch.args,

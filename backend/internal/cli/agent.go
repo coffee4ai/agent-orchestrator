@@ -18,6 +18,9 @@ type agentInfo struct {
 	ID         string `json:"id"`
 	Label      string `json:"label"`
 	AuthStatus string `json:"authStatus,omitempty"`
+	// AuthDetail is a note the daemon attached to a working login, such as an
+	// env credential it skipped after a 401. Shown beside the status.
+	AuthDetail string `json:"authDetail,omitempty"`
 }
 
 // agentInventory mirrors GET /api/v1/agents and POST /api/v1/agents/refresh.
@@ -32,6 +35,29 @@ type agentReadinessObservation struct {
 	Freshness  string `json:"freshness"`
 	ReasonCode string `json:"reasonCode"`
 	Reason     string `json:"reason"`
+	// Diagnostics are the daemon's authored evidence for the verdict.
+	Diagnostics []agentAuthDiagnostic `json:"diagnostics,omitempty"`
+}
+
+// agentAuthDiagnostic mirrors the fields of the daemon's AgentAuthDiagnostic
+// the CLI shows. Values are authored text and variable names, never secrets.
+type agentAuthDiagnostic struct {
+	Code     string `json:"code"`
+	Reason   string `json:"reason"`
+	NextStep string `json:"nextStep,omitempty"`
+}
+
+// rejectedCredentialFallbackCode marks a credential the provider rejected with
+// 401 while a later source in the ladder works.
+const rejectedCredentialFallbackCode = "credential_rejected_fallback" // nolint:gosec // a diagnostic code, not a credential
+
+func rejectedCredentialDiagnostic(obs agentReadinessObservation) (agentAuthDiagnostic, bool) {
+	for _, d := range obs.Diagnostics {
+		if d.Code == rejectedCredentialFallbackCode {
+			return d, true
+		}
+	}
+	return agentAuthDiagnostic{}, false
 }
 
 type agentReadinessSnapshot struct {
@@ -93,6 +119,9 @@ func readinessInventory(readiness agentReadinessResponse) agentInventory {
 			authStatus = "authorized"
 		}
 		info := agentInfo{ID: snapshot.ID, Label: snapshot.Label, AuthStatus: authStatus}
+		if d, ok := rejectedCredentialDiagnostic(snapshot.Authentication); ok {
+			info.AuthDetail = d.Reason
+		}
 		inv.Supported = append(inv.Supported, info)
 		if snapshot.Installation.State == "installed" {
 			inv.Installed = append(inv.Installed, info)
@@ -138,9 +167,12 @@ func writeAgentList(cmd *cobra.Command, inv agentInventory) error {
 				authLabel = "auth unknown"
 			}
 		}
-		if _, ok := authorized[info.ID]; ok {
+		if authorizedInfo, ok := authorized[info.ID]; ok {
 			installLabel = "installed"
 			authLabel = "authorized"
+			if authorizedInfo.AuthDetail != "" {
+				authLabel += " (" + authorizedInfo.AuthDetail + ")"
+			}
 		}
 		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", info.ID, info.Label, installLabel, authLabel); err != nil {
 			return err
