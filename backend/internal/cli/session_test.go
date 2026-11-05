@@ -1162,3 +1162,27 @@ func TestSetupCallsHaveNoClientTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionGetShowsRepoName asserts `ao session get` prints the workspace
+// repository a session was spawned on (`ao spawn --repo`).
+func TestSessionGetShowsRepoName(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1" {
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-1","projectId":"demo","kind":"worker","status":"working","repoName":"api","activity":{"state":"active"},"prs":[]}}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "get", "demo-1")
+	if err != nil {
+		t.Fatalf("session get failed: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "repo: api\n") {
+		t.Fatalf("session get output missing repo:\n%s", out)
+	}
+}

@@ -278,9 +278,16 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 	if err := validateConfig(cfg); err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
-	repo, err := w.repoPath(cfg.ProjectID)
+	// RepoPath selects one child repository of a workspace project (a session
+	// spawned with --repo <child>); the worktree is that child's own, at the
+	// session's ordinary managed path, and the info reports the child's repo.
+	repo, err := w.repoPathForConfig(cfg)
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
+	}
+	reportedRepo := ""
+	if cfg.RepoPath != "" {
+		reportedRepo = repo
 	}
 	if err := w.enableWorktreeConfig(ctx, repo); err != nil {
 		return ports.WorkspaceInfo{}, err
@@ -319,6 +326,7 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 			return ports.WorkspaceInfo{}, err
 		}
 		info.BaseRef = refs.baseRef
+		info.RepoPath = reportedRepo
 		return info, nil
 	}
 	seedRef := ""
@@ -351,7 +359,7 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 	if cfg.FreshBranch {
 		baseSHA = seedSHA
 	}
-	return ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, BaseSHA: baseSHA, BaseRef: baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}, nil
+	return ports.WorkspaceInfo{Path: path, Branch: cfg.Branch, BaseSHA: baseSHA, BaseRef: baseRef, SessionID: cfg.SessionID, ProjectID: cfg.ProjectID, RepoPath: reportedRepo}, nil
 }
 
 // rollbackPreparedAdd cleans only the exact registered worktree, without

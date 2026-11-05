@@ -1832,6 +1832,9 @@ func toSpawnAPIError(err error) error {
 		return apierr.Conflict("WORKSPACE_PROVISION_FAILED", setupErr.Error(), nil)
 	}
 	switch {
+	case errors.Is(err, sessionmanager.ErrUnknownWorkspaceRepo):
+		// apierr has no 422 kind: the controller maps this sentinel itself.
+		return err
 	case errors.Is(err, sessionmanager.ErrClientRequestConflict):
 		return apierr.Conflict("CLIENT_REQUEST_CONFLICT", "clientRequestId belongs to a different task", nil)
 	case errors.Is(err, sessionmanager.ErrClientRequestIncomplete):

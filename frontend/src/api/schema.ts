@@ -5520,6 +5520,7 @@ export interface components {
             provisionState?: "provisioning" | "ready" | "failed";
             provisionSteps?: components["schemas"]["SessionProvisionStep"][];
             prs: components["schemas"]["SessionPRFacts"][];
+            repoName?: string;
             /** @enum {string} */
             requestedOutput?: "artifact";
             reviewerConfig?: components["schemas"]["AgentConfig"];
@@ -7580,6 +7581,7 @@ export interface components {
             parentSessionId?: string;
             projectId?: string;
             prompt?: string;
+            repoName?: string;
             /** @enum {string} */
             requestedOutput?: "artifact";
             /** @enum {string} */
@@ -15703,6 +15705,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -2905,6 +2905,7 @@ func sessionOperations() []operation {
 				{http.StatusCreated, controllers.SpawnSessionResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusUnprocessableEntity, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},
 		},

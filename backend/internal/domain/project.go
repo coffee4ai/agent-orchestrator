@@ -11,6 +11,9 @@ const (
 	ProjectKindScratch ProjectKind = "scratch"
 	// RootWorkspaceRepoName is the reserved repo_name used for the parent root repo.
 	RootWorkspaceRepoName = "__root__"
+	// WorkspaceRepoNameAll asks a workspace-project session for the root with
+	// every child nested in it (the default when a spawn names no repository).
+	WorkspaceRepoNameAll = "all"
 )
 
 // ProjectKind describes how a registered project materialises session workspaces.

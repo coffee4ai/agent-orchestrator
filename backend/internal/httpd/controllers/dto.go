@@ -542,6 +542,11 @@ type SpawnSessionRequest struct {
 	Kind            domain.SessionKind     `json:"kind,omitempty" enum:"worker,orchestrator"`
 	Harness         domain.AgentHarness    `json:"harness,omitempty" enum:"claude-code,codex,aider,opencode,opencode-v2,grok,droid,amp,agy,crush,cursor,qwen,gemini,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,fx,prime-agent,autohand,unreal-agent,codewhale,mimo-code,deepseek-harness,openhands,command-code,memcode,hermes"`
 	Branch          string                 `json:"branch,omitempty"`
+	// RepoName selects what a workspace-project session materialises: a child
+	// repository's name (that child's own worktree alone), "__root__" (the root
+	// alone) or "all" (the root with every child nested in it, the default when
+	// omitted). A name the project does not have is a 422.
+	RepoName string `json:"repoName,omitempty" maxLength:"256"`
 	// Mode picks the conversation controller: chat talks to the agent over a
 	// structured connection, tui opens the agent's native terminal interface.
 	// Omitted resolves to the daemon-owned preference, which defaults to Chat for

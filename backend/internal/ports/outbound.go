@@ -582,6 +582,9 @@ type WorkspaceInfo struct {
 	// when the normal workspace lifecycle primitives operate on one child repo
 	// inside a workspace project.
 	RepoPath string
+	// RepoName names the workspace child this single-repository worktree belongs
+	// to (a session spawned with --repo <child>); empty otherwise.
+	RepoName string
 }
 
 // WorkspaceProjectConfig describes a multi-repo workspace session. RootRepoPath

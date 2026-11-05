@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -5355,4 +5356,30 @@ func TestSessionsAPI_LegacyPreviewDocumentsHaveNoAPIOrigin(t *testing.T) {
 			t.Fatalf("isolated %s: status=%d headers=%v", name, status, headers)
 		}
 	}
+}
+
+// TestSessionsAPI_SpawnPassesRepoNameToService asserts the spawn body's
+// repoName reaches the service verbatim.
+func TestSessionsAPI_SpawnPassesRepoNameToService(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","kind":"worker","harness":"codex","repoName":"api"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.RepoName != "api" {
+		t.Fatalf("RepoName = %q, want api", svc.lastSpawn.RepoName)
+	}
+}
+
+// TestSessionsAPI_SpawnUnknownWorkspaceRepoReturns422 asserts a repoName that
+// names no workspace repository is a 422, not a workspace-create conflict.
+func TestSessionsAPI_SpawnUnknownWorkspaceRepoReturns422(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.spawnErr = fmt.Errorf("spawn ao-3: workspace: %w", sessionmanager.ErrUnknownWorkspaceRepo)
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", `{"projectId":"ao","kind":"worker","harness":"codex","repoName":"nope"}`)
+	assertErrorCode(t, body, status, http.StatusUnprocessableEntity, "UNKNOWN_WORKSPACE_REPO")
 }
