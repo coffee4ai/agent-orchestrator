@@ -831,3 +831,31 @@ func writeHooksLogLines(t *testing.T, dataDir string, lines ...string) {
 		t.Fatal(err)
 	}
 }
+
+func TestDoctorACPRuntimeCheck(t *testing.T) {
+	runtimeDir := t.TempDir()
+	t.Setenv("AO_CLAUDE_ACP_COMMAND", "")
+	t.Setenv("AO_ACP_RUNTIME_DIR", runtimeDir)
+	c := doctorContext(t, map[string]string{}, nil)
+
+	check := c.checkACPRuntime(context.Background())
+	if check.Level != doctorPass || check.Name != "acp-runtime" {
+		t.Fatalf("check = %+v, want PASS acp-runtime", check)
+	}
+	for _, want := range []string{"AO_CLAUDE_ACP_COMMAND", "AO_ACP_RUNTIME_DIR", "bundled", "/Applications/Agent Orchestrator.app/Contents/Resources/acp-runtime", "resolved: env", runtimeDir} {
+		if !strings.Contains(check.Message, want) {
+			t.Fatalf("message = %q, want it to contain %q", check.Message, want)
+		}
+	}
+}
+
+func TestDoctorACPRuntimeCheckWarnsWhenUnresolved(t *testing.T) {
+	t.Setenv("AO_CLAUDE_ACP_COMMAND", "")
+	t.Setenv("AO_ACP_RUNTIME_DIR", filepath.Join(t.TempDir(), "missing"))
+	c := doctorContext(t, map[string]string{}, nil)
+
+	check := c.checkACPRuntime(context.Background())
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "AO_ACP_RUNTIME_DIR") {
+		t.Fatalf("check = %+v, want WARN naming AO_ACP_RUNTIME_DIR", check)
+	}
+}

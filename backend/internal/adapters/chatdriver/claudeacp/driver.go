@@ -477,12 +477,10 @@ func resolveRuntime(ctx context.Context) (runtimeLaunch, error) {
 		return runtimeLaunch{command: resolved}, nil
 	}
 
-	runtimeDir := strings.TrimSpace(os.Getenv("AO_ACP_RUNTIME_DIR"))
-	if runtimeDir == "" {
-		runtimeDir = runtimeDirectoryBesideExecutable()
-	}
-	if runtimeDir == "" {
-		return runtimeLaunch{}, errors.New("AO ACP runtime is not installed")
+	env := map[string]string{"AO_ACP_RUNTIME_DIR": os.Getenv("AO_ACP_RUNTIME_DIR")}
+	runtimeDir, _, err := lookupRuntimeDir(env, runtime.GOOS, os.Stat)
+	if err != nil {
+		return runtimeLaunch{}, err
 	}
 	node := filepath.Join(runtimeDir, "node", "bin", "node")
 	if runtime.GOOS == "windows" {
@@ -501,7 +499,57 @@ func resolveRuntime(ctx context.Context) (runtimeLaunch, error) {
 	return runtimeLaunch{command: node, args: []string{entry}}, nil
 }
 
-func runtimeDirectoryBesideExecutable() string {
+// Runtime lookup sources, in the order lookupRuntimeDir tries them.
+const (
+	RuntimeSourceCommand = "command"
+	RuntimeSourceEnv     = "env"
+	RuntimeSourceBundled = "bundled"
+	RuntimeSourceApp     = "app"
+
+	// InstalledAppRuntimeDir is where the macOS app bundle keeps acp-runtime.
+	InstalledAppRuntimeDir = "/Applications/Agent Orchestrator.app/Contents/Resources/acp-runtime"
+)
+
+// RuntimeLookupOrder describes the four lookups for diagnostics (`ao doctor`).
+var RuntimeLookupOrder = []string{
+	"command: AO_CLAUDE_ACP_COMMAND",
+	"env: AO_ACP_RUNTIME_DIR",
+	"bundled: acp-runtime beside the ao executable",
+	"app: " + InstalledAppRuntimeDir + " (macOS only)",
+}
+
+// LookupRuntimeDir is the exported form of lookupRuntimeDir for diagnostics.
+func LookupRuntimeDir(env map[string]string, goos string, stat func(string) (os.FileInfo, error)) (dir, source string, err error) {
+	return lookupRuntimeDir(env, goos, stat)
+}
+
+// lookupRuntimeDir picks the first available ACP runtime location: the command
+// override, AO_ACP_RUNTIME_DIR, the directory beside the executable, then (macOS
+// only) the installed app bundle. A set but missing AO_ACP_RUNTIME_DIR is an
+// error, never a reason to fall through to another location. For source
+// "command" dir is the command name, not a directory.
+func lookupRuntimeDir(env map[string]string, goos string, stat func(string) (os.FileInfo, error)) (dir, source string, err error) {
+	if command := strings.TrimSpace(env["AO_CLAUDE_ACP_COMMAND"]); command != "" {
+		return command, RuntimeSourceCommand, nil
+	}
+	if runtimeDir := strings.TrimSpace(env["AO_ACP_RUNTIME_DIR"]); runtimeDir != "" {
+		if info, statErr := stat(runtimeDir); statErr != nil || !info.IsDir() {
+			return "", "", fmt.Errorf("AO_ACP_RUNTIME_DIR %q is not an existing directory", runtimeDir)
+		}
+		return runtimeDir, RuntimeSourceEnv, nil
+	}
+	if bundled := runtimeDirectoryBesideExecutable(stat); bundled != "" {
+		return bundled, RuntimeSourceBundled, nil
+	}
+	if goos == "darwin" {
+		if info, statErr := stat(InstalledAppRuntimeDir); statErr == nil && info.IsDir() {
+			return InstalledAppRuntimeDir, RuntimeSourceApp, nil
+		}
+	}
+	return "", "", fmt.Errorf("AO ACP runtime is not installed; looked at: %s", strings.Join(RuntimeLookupOrder, "; "))
+}
+
+func runtimeDirectoryBesideExecutable(stat func(string) (os.FileInfo, error)) string {
 	executable, err := os.Executable()
 	if err != nil {
 		return ""
@@ -511,7 +559,7 @@ func runtimeDirectoryBesideExecutable() string {
 		filepath.Join(resources, "acp-runtime"),
 		filepath.Join(resources, "resources", "acp-runtime"),
 	} {
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		if info, err := stat(candidate); err == nil && info.IsDir() {
 			return candidate
 		}
 	}

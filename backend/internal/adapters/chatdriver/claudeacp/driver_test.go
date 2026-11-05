@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -400,6 +402,96 @@ func TestRuntimeCommandOverride(t *testing.T) {
 	}
 	if launch.command != executable || len(launch.args) != 0 {
 		t.Fatalf("runtime = %#v", launch)
+	}
+}
+
+const installedAppRuntime = "/Applications/Agent Orchestrator.app/Contents/Resources/acp-runtime"
+
+type fakeFileInfo struct{ os.FileInfo }
+
+func (fakeFileInfo) IsDir() bool { return true }
+
+func statFinding(paths ...string) func(string) (os.FileInfo, error) {
+	return func(path string) (os.FileInfo, error) {
+		if slices.Contains(paths, path) {
+			return fakeFileInfo{}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+}
+
+func TestLookupRuntimeDirFallsBackToInstalledApp(t *testing.T) {
+	dir, source, err := lookupRuntimeDir(map[string]string{}, "darwin", statFinding(installedAppRuntime))
+	if err != nil {
+		t.Fatalf("lookupRuntimeDir: %v", err)
+	}
+	if dir != installedAppRuntime || source != "app" {
+		t.Fatalf("dir, source = %q, %q; want %q, app", dir, source, installedAppRuntime)
+	}
+}
+
+func TestLookupRuntimeDirEnvWins(t *testing.T) {
+	env := map[string]string{"AO_ACP_RUNTIME_DIR": "/custom/runtime"}
+	dir, source, err := lookupRuntimeDir(env, "darwin", statFinding("/custom/runtime", installedAppRuntime))
+	if err != nil {
+		t.Fatalf("lookupRuntimeDir: %v", err)
+	}
+	if dir != "/custom/runtime" || source != "env" {
+		t.Fatalf("dir, source = %q, %q; want /custom/runtime, env", dir, source)
+	}
+}
+
+func TestLookupRuntimeDirInvalidEnvNeverFallsThrough(t *testing.T) {
+	env := map[string]string{"AO_ACP_RUNTIME_DIR": "/missing/runtime"}
+	_, _, err := lookupRuntimeDir(env, "darwin", statFinding(installedAppRuntime))
+	if err == nil || !strings.Contains(err.Error(), "/missing/runtime") || !strings.Contains(err.Error(), "AO_ACP_RUNTIME_DIR") {
+		t.Fatalf("error = %v, want it to name AO_ACP_RUNTIME_DIR and /missing/runtime", err)
+	}
+}
+
+func TestLookupRuntimeDirCommandWins(t *testing.T) {
+	env := map[string]string{"AO_CLAUDE_ACP_COMMAND": "my-acp", "AO_ACP_RUNTIME_DIR": "/custom/runtime"}
+	_, source, err := lookupRuntimeDir(env, "darwin", statFinding("/custom/runtime", installedAppRuntime))
+	if err != nil {
+		t.Fatalf("lookupRuntimeDir: %v", err)
+	}
+	if source != "command" {
+		t.Fatalf("source = %q, want command", source)
+	}
+}
+
+func TestLookupRuntimeDirLinuxNoAppFallback(t *testing.T) {
+	_, _, err := lookupRuntimeDir(map[string]string{}, "linux", statFinding(installedAppRuntime))
+	if err == nil {
+		t.Fatal("lookupRuntimeDir succeeded on linux via the macOS app path")
+	}
+	for _, want := range []string{"AO_CLAUDE_ACP_COMMAND", "AO_ACP_RUNTIME_DIR", "bundled", installedAppRuntime} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+func TestResolveRuntimeStillChecksNodeVersion(t *testing.T) {
+	dir := t.TempDir()
+	node := filepath.Join(dir, "node", "bin", "node")
+	entry := filepath.Join(dir, "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js")
+	for _, path := range []string{node, entry} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(entry, []byte("//"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(node, []byte("#!/bin/sh\necho v10.0.0\n"), 0o700); err != nil { //nolint:gosec // test fake executable
+		t.Fatal(err)
+	}
+	t.Setenv("AO_CLAUDE_ACP_COMMAND", "")
+	t.Setenv("AO_ACP_RUNTIME_DIR", dir)
+	_, err := resolveRuntime(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "requires Node") {
+		t.Fatalf("error = %v, want the Node version requirement", err)
 	}
 }
 
