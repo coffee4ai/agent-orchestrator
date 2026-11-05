@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -423,5 +424,121 @@ func TestExpiredLoginWithoutRefreshTokenIsNotRenewable(t *testing.T) {
 	})
 	if env.ExpiredButRenewable(time.Now()) || !env.ExpiresAt.IsZero() {
 		t.Fatal("environment credentials carry no stored expiry")
+	}
+}
+
+func writeCredentialsFile(t *testing.T, token string) string {
+	t.Helper()
+	dir := t.TempDir()
+	content := `{"claudeAiOauth":{"accessToken":"` + token + `"}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// A credential the provider rejects with 401 must not shadow a working one
+// further down the ladder: the agent would fail on it while AO reported on it.
+func TestResolveLocalSkipsRejectedEnvCredential(t *testing.T) {
+	dir := writeCredentialsFile(t, "from-file")
+	var probed []string
+	cred, ok := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env:       envFrom(map[string]string{"ANTHROPIC_API_KEY": "from-env"}),
+		ConfigDir: dir, GOOS: "linux",
+		Validate: func(_ context.Context, c Credential) (bool, int) {
+			probed = append(probed, c.Source)
+			if c.Source == "ANTHROPIC_API_KEY" {
+				return false, 401
+			}
+			return true, 200
+		},
+	})
+	if !ok {
+		t.Fatal("expected the credentials file to resolve")
+	}
+	if cred.Source != "credentials-file" {
+		t.Fatalf("source = %q, want credentials-file", cred.Source)
+	}
+	if !reflect.DeepEqual(cred.RejectedSources, []string{"ANTHROPIC_API_KEY"}) {
+		t.Fatalf("RejectedSources = %v", cred.RejectedSources)
+	}
+	if !reflect.DeepEqual(probed, []string{"ANTHROPIC_API_KEY", "credentials-file"}) {
+		t.Fatalf("probed = %v", probed)
+	}
+	if got, want := cred.Diagnostic(), "env credential rejected (401); using credentials-file"; got != want {
+		t.Fatalf("diagnostic = %q, want %q", got, want)
+	}
+}
+
+func TestResolveLocalEnvWinsWhenValid(t *testing.T) {
+	dir := writeCredentialsFile(t, "from-file")
+	calls := 0
+	cred, ok := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env:       envFrom(map[string]string{"ANTHROPIC_API_KEY": "from-env"}),
+		ConfigDir: dir, GOOS: "linux",
+		Validate: func(context.Context, Credential) (bool, int) { calls++; return true, 200 },
+	})
+	if !ok || cred.Source != "ANTHROPIC_API_KEY" {
+		t.Fatalf("credential = %+v ok=%v", cred, ok)
+	}
+	if len(cred.RejectedSources) != 0 || cred.Diagnostic() != "" {
+		t.Fatalf("nothing was rejected: %v %q", cred.RejectedSources, cred.Diagnostic())
+	}
+	if calls != 1 {
+		t.Fatalf("validator calls = %d, want 1", calls)
+	}
+}
+
+func TestResolveLocalNoValidatorKeepsOldOrder(t *testing.T) {
+	dir := writeCredentialsFile(t, "from-file")
+	cred, ok := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env:       envFrom(map[string]string{"ANTHROPIC_API_KEY": "from-env"}),
+		ConfigDir: dir, GOOS: "linux",
+	})
+	if !ok || cred.Source != "ANTHROPIC_API_KEY" || len(cred.RejectedSources) != 0 {
+		t.Fatalf("credential = %+v ok=%v", cred, ok)
+	}
+}
+
+// Only a 401 is evidence the credential is bad; a timeout or 5xx must keep it.
+func TestResolveLocalInconclusiveProbeKeepsCredential(t *testing.T) {
+	dir := writeCredentialsFile(t, "from-file")
+	cred, _ := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env:       envFrom(map[string]string{"ANTHROPIC_API_KEY": "from-env"}),
+		ConfigDir: dir, GOOS: "linux",
+		Validate: func(context.Context, Credential) (bool, int) { return false, 503 },
+	})
+	if cred.Source != "ANTHROPIC_API_KEY" || len(cred.RejectedSources) != 0 {
+		t.Fatalf("credential = %+v", cred)
+	}
+}
+
+// The keychain sits between env and the file in the ladder.
+func TestResolveLocalRejectedKeychainFallsToFile(t *testing.T) {
+	dir := writeCredentialsFile(t, "from-file")
+	cred, ok := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env: envFrom(nil), ConfigDir: dir, GOOS: "darwin", AllowKeychain: true,
+		Runner: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(`{"claudeAiOauth":{"accessToken":"from-keychain"}}`), nil
+		},
+		Validate: func(_ context.Context, c Credential) (bool, int) {
+			return c.Source != "keychain", map[bool]int{true: 200, false: 401}[c.Source != "keychain"]
+		},
+	})
+	if !ok || cred.Source != "credentials-file" || !reflect.DeepEqual(cred.RejectedSources, []string{"keychain"}) {
+		t.Fatalf("credential = %+v ok=%v", cred, ok)
+	}
+}
+
+// A gateway credential is probed against the gateway, not api.anthropic.com.
+func TestResolveLocalValidatesGatewayCredentialWithBaseURL(t *testing.T) {
+	var seen Credential
+	_, _ = ResolveLocal(context.Background(), ProviderGateway, ResolveOptions{
+		Env:       envFrom(map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gw.example"}),
+		ConfigDir: t.TempDir(), GOOS: "linux",
+		Validate: func(_ context.Context, c Credential) (bool, int) { seen = c; return true, 200 },
+	})
+	if seen.Provider != ProviderGateway || seen.BaseURL != "https://gw.example" {
+		t.Fatalf("validator saw %+v", seen)
 	}
 }

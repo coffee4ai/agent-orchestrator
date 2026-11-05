@@ -426,6 +426,7 @@ type Manager struct {
 	agentBrowserURL             string
 	agentBrowserToken           string
 	agentAccounts               ports.AgentAccountLaunchEnv
+	credentialRejections        CredentialRejections
 	accountOverrideMu           sync.Mutex
 	accountOverrides            map[domain.SessionID]string
 	attachments                 *attachmentstore.Store
@@ -647,6 +648,17 @@ func (m *Manager) SetAgentReadiness(provider ports.AgentReadinessProvider) {
 // Nil launches every agent under the computer's own CLI login.
 func (m *Manager) SetAgentAccounts(accounts ports.AgentAccountLaunchEnv) {
 	m.agentAccounts = accounts
+}
+
+// CredentialRejections names the environment variables whose credential the
+// provider rejected for a launch in workingDir with this environment (names,
+// never values). workingDir lets the check see the project's own settings.
+type CredentialRejections func(ctx context.Context, workingDir string, env map[string]string) []string
+
+// SetCredentialRejections completes daemon wiring before request handling
+// begins. Nil leaves every credential variable untouched.
+func (m *Manager) SetCredentialRejections(rejections CredentialRejections) {
+	m.credentialRejections = rejections
 }
 
 // SetPersistentHostReconcileDone fences cold Chat resumes until startup has
@@ -6344,6 +6356,24 @@ func (m *Manager) applyAgentAccountEnv(id domain.SessionID, accountID string, en
 	return err
 }
 
+// dropRejectedCredentials blanks every credential variable the provider
+// rejected for this session's launch, so the agent falls through to the
+// working login instead of failing on a stale key. It runs only for Claude
+// Code launches, with the launch's own context and workspace, because the
+// answer depends on the project's settings and costs a provider request. The
+// entry is set empty rather than deleted: a missing key would let the child
+// inherit the daemon's own value.
+func (m *Manager) dropRejectedCredentials(ctx context.Context, rec domain.SessionRecord, env map[string]string) {
+	if m.credentialRejections == nil || rec.Harness != domain.HarnessClaudeCode {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for _, name := range m.credentialRejections(ctx, rec.Metadata.WorkspacePath, env) {
+		setProtectedEnv(env, name, "", envKeysCaseInsensitive)
+	}
+}
+
 func deleteProtectedEnv(env map[string]string, key string, caseInsensitive bool) {
 	if !caseInsensitive {
 		delete(env, key)
@@ -6419,6 +6449,7 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	if err != nil {
 		return rec, nil, err
 	}
+	m.dropRejectedCredentials(ctx, rec, env)
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, rec.ControllerOwner(), verifier)
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)
@@ -6439,6 +6470,7 @@ func (m *Manager) prepareChatControllerEnv(
 	if err != nil {
 		return rec, nil, err
 	}
+	m.dropRejectedCredentials(ctx, rec, env)
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, expected, verifier)
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)

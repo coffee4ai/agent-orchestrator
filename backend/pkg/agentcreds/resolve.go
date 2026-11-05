@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +58,14 @@ type ResolveOptions struct {
 	// workspace from inheriting a subscription token from the user's keychain or
 	// credentials file. Explicit launch credentials remain eligible.
 	DisableStoredCredentials bool
+	// Validate asks the provider whether cred is accepted. When set, a
+	// credential answered with HTTP 401 is skipped for the next source in the
+	// ladder and recorded in Credential.RejectedSources. Any other answer
+	// (including a transport failure, status 0) keeps the credential, because
+	// only a 401 is evidence it is bad. Nil keeps the plain precedence order.
+	// The validator receives the credential in the shape it will be probed in
+	// (provider and base URL set) and must never log its Secret.
+	Validate func(ctx context.Context, cred Credential) (ok bool, status int)
 }
 
 // WithClaudeSettings applies the shared settings resolver to the launch context.
@@ -143,18 +153,19 @@ func envTruthy(value string) bool {
 // ResolveLocal finds the credential Claude Code will use for the given
 // provider. ok=false means nothing was found, which is Unknown — never a
 // statement that the user is signed out.
+//
+// With opts.Validate set the ladder is env, then keychain, then credentials
+// file, and the first credential the provider does not reject with 401 wins.
 func ResolveLocal(ctx context.Context, provider Provider, opts ResolveOptions) (Credential, bool) {
 	switch provider {
 	case ProviderFirstParty:
-		return resolveFirstParty(ctx, opts)
+		return resolveFirstParty(ctx, opts, func(c Credential) Credential { return c })
 	case ProviderGateway:
-		cred, ok := resolveFirstParty(ctx, opts)
-		if !ok {
-			return Credential{}, false
-		}
-		cred.Provider = ProviderGateway
-		cred.BaseURL = opts.env("ANTHROPIC_BASE_URL")
-		return cred, true
+		return resolveFirstParty(ctx, opts, func(c Credential) Credential {
+			c.Provider = ProviderGateway
+			c.BaseURL = opts.env("ANTHROPIC_BASE_URL")
+			return c
+		})
 	default:
 		return Credential{}, false
 	}
@@ -175,26 +186,65 @@ var firstPartySources = []struct {
 	{"ANTHROPIC_AUTH_TOKEN", KindAuthToken},
 }
 
-func resolveFirstParty(ctx context.Context, opts ResolveOptions) (Credential, bool) {
+// resolveFirstParty walks the ladder lazily: a later source is read only when
+// every earlier one was rejected, so without a validator exactly the first
+// present credential is read, as before. finish shapes a credential for the
+// provider it will be probed against.
+//
+// When every credential present is rejected the highest-precedence one is
+// returned, because that is the one the agent would send; its source is then
+// listed in RejectedSources too.
+func resolveFirstParty(ctx context.Context, opts ResolveOptions, finish func(Credential) Credential) (Credential, bool) {
+	var (
+		first     Credential
+		haveFirst bool
+		rejected  []string
+	)
+	// try reports whether the walk stops at cred.
+	try := func(cred Credential) (Credential, bool) {
+		cred = finish(cred)
+		if !haveFirst {
+			first, haveFirst = cred, true
+		}
+		if opts.Validate != nil {
+			if _, status := opts.Validate(ctx, cred); status == http.StatusUnauthorized {
+				rejected = append(rejected, cred.Source)
+				return Credential{}, false
+			}
+		}
+		cred.RejectedSources = slices.Clone(rejected)
+		return cred, true
+	}
 	for _, source := range firstPartySources {
 		if secret := opts.env(source.env); secret != "" {
-			return Credential{
+			if cred, ok := try(Credential{
 				Kind: source.kind, Secret: secret, Source: source.env, Provider: ProviderFirstParty,
-			}, true
+			}); ok {
+				return cred, true
+			}
 		}
 	}
-	if opts.DisableStoredCredentials {
+	if !opts.DisableStoredCredentials {
+		// Source 5: the subscription login, stored in the keychain on macOS
+		// and in a plain file everywhere else.
+		for _, read := range storedOAuthReaders(opts) {
+			stored, source, ok := read(ctx, opts)
+			if !ok {
+				continue
+			}
+			if cred, ok := try(Credential{
+				Kind: stored.kind, Secret: stored.token, Source: source, Provider: ProviderFirstParty,
+				ExpiresAt: stored.expiresAt, Renewable: stored.renewable,
+			}); ok {
+				return cred, true
+			}
+		}
+	}
+	if !haveFirst {
 		return Credential{}, false
 	}
-	// Source 5: the subscription login, stored in the keychain on macOS and in
-	// a plain file everywhere else.
-	if stored, source, ok := loadOAuth(ctx, opts); ok {
-		return Credential{
-			Kind: stored.kind, Secret: stored.token, Source: source, Provider: ProviderFirstParty,
-			ExpiresAt: stored.expiresAt, Renewable: stored.renewable,
-		}, true
-	}
-	return Credential{}, false
+	first.RejectedSources = slices.Clone(rejected)
+	return first, true
 }
 
 // storedOAuth is the subscription login Claude Code persisted: the access
@@ -207,26 +257,25 @@ type storedOAuth struct {
 	renewable bool
 }
 
-// loadOAuth is the entire platform surface of this package.
+// storedOAuthReaders is the entire platform surface of this package, in
+// ladder order.
 //
 // macOS keeps the subscription token in the keychain; Linux and Windows keep
 // it in .credentials.json, and the Claude Code binary contains no reference to
 // Windows Credential Manager, wincred, CredRead, or DPAPI — so there is no
-// third storage backend to implement. The macOS path falls through to the file
-// on any failure, which is the path the other two platforms always take, so
-// non-Mac platforms exercise strictly less code rather than different code.
-func loadOAuth(ctx context.Context, opts ResolveOptions) (stored storedOAuth, source string, ok bool) {
+// third storage backend to implement. On macOS an absent, locked, or denied
+// keychain falls through to the file, which is the path the other two
+// platforms always take, so non-Mac platforms exercise strictly less code
+// rather than different code.
+func storedOAuthReaders(opts ResolveOptions) []func(context.Context, ResolveOptions) (storedOAuth, string, bool) {
+	var readers []func(context.Context, ResolveOptions) (storedOAuth, string, bool)
 	if opts.goos() == "darwin" && opts.AllowKeychain {
-		if stored, ok := readKeychain(ctx, opts); ok {
-			return stored, "keychain", true
-		}
-		// Absent, locked, or denied. Fall through to the file.
+		readers = append(readers, func(ctx context.Context, opts ResolveOptions) (storedOAuth, string, bool) {
+			stored, ok := readKeychain(ctx, opts)
+			return stored, "keychain", ok
+		})
 	}
-	stored, src, ok := readCredentialsFile(ctx, opts)
-	if !ok {
-		return storedOAuth{}, "", false
-	}
-	return stored, src, true
+	return append(readers, readCredentialsFile)
 }
 
 // readCredentialsFile reads ~/.claude/.credentials.json.

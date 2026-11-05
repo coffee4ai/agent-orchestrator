@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -99,6 +100,36 @@ type Credential struct {
 	// cross-process lock and rotates the refresh token, so a second writer
 	// could sign the user out everywhere.
 	Renewable bool
+	// RejectedSources names, in ladder order, the sources the provider
+	// answered with 401 before this credential was chosen. Names only, never
+	// values: an env variable's name for an env credential, or "keychain".
+	RejectedSources []string
+}
+
+// RejectedEnvVars is RejectedSources without the stored logins: the names of
+// the environment variables a runtime must not be allowed to inherit.
+func (c Credential) RejectedEnvVars() []string {
+	var names []string
+	for _, source := range c.RejectedSources {
+		if source != "keychain" && source != "credentials-file" {
+			names = append(names, source)
+		}
+	}
+	return names
+}
+
+// Diagnostic explains a fallback in words safe to show a user: which kind of
+// credential was rejected and which source is used instead. It is empty when
+// nothing was rejected or the chosen credential is itself a rejected one.
+func (c Credential) Diagnostic() string {
+	if len(c.RejectedSources) == 0 || slices.Contains(c.RejectedSources, c.Source) {
+		return ""
+	}
+	label := "env credential"
+	if c.RejectedSources[0] == "keychain" || c.RejectedSources[0] == "credentials-file" {
+		label = c.RejectedSources[0] + " credential"
+	}
+	return label + " rejected (401); using " + c.Source
 }
 
 // ExpiredButRenewable reports whether this is a stored subscription login

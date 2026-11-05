@@ -223,7 +223,11 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 			ExpectedVersionPrefix: spec.ExpectedVersionPrefix,
 		}))
 	}
-	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkACPRuntime(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
+	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkACPRuntime(ctx))
+	if check, ok := c.checkClaudeCredential(ctx); ok {
+		checks = append(checks, check)
+	}
+	checks = append(checks, c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
 	return checks
 }
 
@@ -510,6 +514,33 @@ func (c *commandContext) checkACPRuntime(_ context.Context) doctorCheck {
 		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: name, Message: fmt.Sprintf("chat mode runtime not found: %v (lookups: %s)", err, lookups)}
 	}
 	return doctorCheck{Level: doctorPass, Section: doctorSectionAgents, Name: name, Message: fmt.Sprintf("resolved: %s (%s); lookups: %s", source, dir, lookups)}
+}
+
+// checkClaudeCredential asks the daemon, which owns credential discovery,
+// whether it had to skip a Claude credential the provider rejected. It reports
+// only that case: with no daemon, or nothing rejected, there is nothing to add.
+func (c *commandContext) checkClaudeCredential(ctx context.Context) (doctorCheck, bool) {
+	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	readiness, err := c.ensureAgentReadiness(reqCtx, []string{"claude-code"}, "display")
+	if err != nil {
+		return doctorCheck{}, false
+	}
+	for _, snapshot := range readiness.Agents {
+		if snapshot.ID != "claude-code" {
+			continue
+		}
+		d, ok := rejectedCredentialDiagnostic(snapshot.Authentication)
+		if !ok {
+			return doctorCheck{}, false
+		}
+		message := d.Reason
+		if d.NextStep != "" {
+			message += "; fix: " + d.NextStep
+		}
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionAgents, Name: "claude-credential", Message: message}, true
+	}
+	return doctorCheck{}, false
 }
 
 func (c *commandContext) checkGitHubToken(ctx context.Context) doctorCheck {

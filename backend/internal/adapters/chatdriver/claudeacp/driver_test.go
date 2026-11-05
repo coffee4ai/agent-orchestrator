@@ -572,3 +572,52 @@ func TestClaudeAuthRejectionNotifiesDaemon(t *testing.T) {
 		t.Fatalf("daemon callback calls = %d, want 1", called)
 	}
 }
+
+type rejectingClaudePlugin struct {
+	rejected []string
+	seenEnv  map[string]string
+}
+
+func (*rejectingClaudePlugin) ResolveBinary(context.Context) (string, error) {
+	return "/tmp/claude", nil
+}
+func (p *rejectingClaudePlugin) RejectedCredentialEnv(_ context.Context, _ string, env map[string]string) []string {
+	p.seenEnv = map[string]string{"ANTHROPIC_API_KEY": env["ANTHROPIC_API_KEY"]}
+	return p.rejected
+}
+
+func TestACPLaunchEnvDropsRejectedCredential(t *testing.T) {
+	plugin := &rejectingClaudePlugin{rejected: []string{"ANTHROPIC_API_KEY"}}
+	input := map[string]string{"ANTHROPIC_API_KEY": "rejected-value", "KEEP_ME": "kept"}
+	env := claudeACPLaunchEnv(input, "/tmp/claude", "", nil)
+	dropRejectedClaudeCredentials(context.Background(), plugin, "/work", input, env)
+	if plugin.seenEnv["ANTHROPIC_API_KEY"] != "rejected-value" {
+		t.Fatal("the rejection check must see the launch environment")
+	}
+	// Empty, not deleted: the runtime merges this over the daemon's own
+	// environment, where a missing key would be inherited.
+	if value, present := env["ANTHROPIC_API_KEY"]; !present || value != "" {
+		t.Fatalf("rejected credential reached the runtime: present=%v nonEmpty=%v", present, value != "")
+	}
+	if env["KEEP_ME"] != "kept" {
+		t.Fatalf("unrelated variable lost: %v", env)
+	}
+	if input["ANTHROPIC_API_KEY"] != "rejected-value" {
+		t.Fatal("the caller's map must not be mutated")
+	}
+}
+
+func TestACPLaunchEnvKeepsCredentialWhenNothingRejected(t *testing.T) {
+	plugin := &rejectingClaudePlugin{}
+	input := map[string]string{"ANTHROPIC_API_KEY": "good"}
+	env := claudeACPLaunchEnv(input, "/tmp/claude", "", nil)
+	dropRejectedClaudeCredentials(context.Background(), plugin, "/work", input, env)
+	if env["ANTHROPIC_API_KEY"] != "good" {
+		t.Fatal("a valid credential must pass through")
+	}
+	// A plugin that cannot report rejections leaves the env alone.
+	dropRejectedClaudeCredentials(context.Background(), &rejectedClaudePlugin{}, "/work", input, env)
+	if env["ANTHROPIC_API_KEY"] != "good" {
+		t.Fatal("a plugin without the check must not change the env")
+	}
+}
