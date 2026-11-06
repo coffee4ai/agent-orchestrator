@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -758,6 +759,7 @@ func (m *Service) UpdateSettings(ctx context.Context, id domain.ProjectID, in Up
 	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
+	in.Config = keepStoredRoleConfig(in.Config, row.Config)
 	updated, err := m.store.UpdateProjectSettings(ctx, string(id), inDisplayName, in.Config)
 	if err != nil {
 		return Project{}, apierr.Internal("PROJECT_SETTINGS_UPDATE_FAILED", "Failed to update project settings")
@@ -794,11 +796,71 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {
 		return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
 	}
+	in.Config = keepStoredRoleConfig(in.Config, row.Config)
+	if strings.TrimSpace(in.PermissionsFile) != "" {
+		allow, err := withPermissionsFile(row.Path, in.Config.PermissionsAllow, in.PermissionsFile, in.PermissionsRepo)
+		if err != nil {
+			return Project{}, err
+		}
+		in.Config.PermissionsAllow = allow
+	}
 	row.Config = in.Config
 	if err := m.store.UpsertProject(ctx, row); err != nil {
 		return Project{}, apierr.Internal("PROJECT_CONFIG_UPDATE_FAILED", "Failed to update project config")
 	}
 	return m.projectFromRow(ctx, row), nil
+}
+
+// keepStoredRoleConfig carries the stored strictRoles and permissionsAllow
+// into a replacement config that omits them, so editing any other field never
+// turns role enforcement off or drops allow rules. Turning strictRoles off
+// takes an explicit false.
+func keepStoredRoleConfig(next, stored domain.ProjectConfig) domain.ProjectConfig {
+	if next.StrictRoles == nil {
+		next.StrictRoles = stored.StrictRoles
+	}
+	if next.PermissionsAllow == nil {
+		next.PermissionsAllow = stored.PermissionsAllow
+	}
+	return next
+}
+
+// withPermissionsFile reads a repo-relative permissions file (an object of
+// role to allow rules) from the project root and returns allow with the file's
+// rules stored under repo (RootWorkspaceRepoName when empty). The input map is
+// not modified. Any problem with the path or the file is a 422.
+func withPermissionsFile(projectPath string, allow map[string]map[string][]string, file, repo string) (map[string]map[string][]string, error) {
+	invalid := func(format string, args ...any) error {
+		return apierr.Unprocessable("INVALID_PERMISSIONS_FILE", fmt.Sprintf(format, args...), nil)
+	}
+	file = strings.TrimSpace(file)
+	if repo == "" {
+		repo = domain.RootWorkspaceRepoName
+	}
+	if strings.TrimSpace(repo) == "" {
+		return nil, invalid("permissionsRepo must name a repository")
+	}
+	clean := filepath.Clean(filepath.FromSlash(file))
+	if filepath.IsAbs(clean) || strings.HasPrefix(file, "/") || strings.HasPrefix(file, `\`) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return nil, invalid("permissionsFile %q must be repo-relative and must not escape the project root", file)
+	}
+	data, err := os.ReadFile(filepath.Join(projectPath, clean)) //nolint:gosec // repo-relative path checked above
+	if err != nil {
+		return nil, invalid("permissionsFile %q cannot be read: %v", file, err)
+	}
+	var byRole map[string][]string
+	if err := json.Unmarshal(data, &byRole); err != nil || byRole == nil {
+		return nil, invalid("permissionsFile %q must be a JSON object of role to a list of rule strings", file)
+	}
+	if err := domain.ValidatePermissionsAllow(map[string]map[string][]string{repo: byRole}); err != nil {
+		return nil, invalid("permissionsFile %q: %v", file, err)
+	}
+	next := make(map[string]map[string][]string, len(allow)+1)
+	for name, rules := range allow {
+		next[name] = rules
+	}
+	next[repo] = byRole
+	return next, nil
 }
 
 func validateScratchProjectConfig(cfg domain.ProjectConfig) error {

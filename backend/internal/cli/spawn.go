@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -19,6 +20,9 @@ import (
 // daemon's spawn handler so a direct API call is held to the same limit.
 const maxDisplayNameLen = 100
 
+// spawnRoles are the session roles `ao spawn --role` accepts, in help order.
+var spawnRoles = []string{"orchestrator", "controller", "writer", "reviewer"}
+
 type spawnOptions struct {
 	project         string
 	standalone      bool
@@ -27,6 +31,7 @@ type spawnOptions struct {
 	mode            string
 	branch          string
 	repo            string
+	role            string
 	prompt          string
 	issue           string
 	name            string
@@ -51,6 +56,7 @@ type spawnRequest struct {
 	Harness         string `json:"harness,omitempty"`
 	Branch          string `json:"branch,omitempty"`
 	RepoName        string `json:"repoName,omitempty"`
+	Role            string `json:"role,omitempty"`
 	Prompt          string `json:"prompt,omitempty"`
 	Model           string `json:"model,omitempty"`
 	Effort          string `json:"effort,omitempty"`
@@ -103,6 +109,10 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			}
 			if opts.kind != "" && opts.kind != "worker" && opts.kind != "orchestrator" {
 				return usageError{fmt.Errorf(`--kind must be "worker" or "orchestrator"`)}
+			}
+			opts.role = strings.TrimSpace(opts.role)
+			if opts.role != "" && !slices.Contains(spawnRoles, opts.role) {
+				return usageError{fmt.Errorf("--role must be one of %s", strings.Join(spawnRoles, ", "))}
 			}
 			if opts.output != "" && opts.output != "artifact" {
 				return usageError{fmt.Errorf(`--output must be "artifact"`)}
@@ -179,6 +189,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				Mode:            opts.mode,
 				Branch:          opts.branch,
 				RepoName:        opts.repo,
+				Role:            opts.role,
 				Prompt:          opts.prompt,
 				Model:           strings.TrimSpace(opts.model),
 				Effort:          strings.TrimSpace(opts.effort),
@@ -243,6 +254,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.mode, "mode", "", "Initial session interface: chat (structured agent connection) or tui (the agent's native terminal). Omitted uses the daemon default; compatible sessions can switch later.")
 	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for standalone or Scratch sessions)")
 	f.StringVar(&opts.repo, "repo", "", "Workspace projects only: a child repository's name (that child's own worktree alone), __root__ (the root alone) or all (the root with every child; default)")
+	f.StringVar(&opts.role, "role", "", "What the session may do: orchestrator, controller, writer or reviewer (default: writer for a worker, orchestrator for an orchestrator); a project with strictRoles enforces it")
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
 	f.StringVar(&opts.output, "output", "", "Deliverable for the session: artifact asks the agent to write a file in its artifact directory instead of opening a PR (default: ordinary task)")

@@ -196,6 +196,8 @@ func httpStatus(k apierr.Kind) (int, string) {
 		return http.StatusNotImplemented, "not_implemented"
 	case apierr.KindUnavailable:
 		return http.StatusServiceUnavailable, "unavailable"
+	case apierr.KindUnprocessable:
+		return http.StatusUnprocessableEntity, "unprocessable"
 	case apierr.KindInternal:
 		return http.StatusInternalServerError, "internal"
 	default:

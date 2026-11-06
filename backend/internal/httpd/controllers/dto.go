@@ -547,6 +547,13 @@ type SpawnSessionRequest struct {
 	// alone) or "all" (the root with every child nested in it, the default when
 	// omitted). A name the project does not have is a 422.
 	RepoName string `json:"repoName,omitempty" maxLength:"256"`
+	// Role is what the session may do: orchestrator, controller, writer or
+	// reviewer. Omitted defaults by kind (writer for a worker, orchestrator for
+	// an orchestrator); any other value, or a role that contradicts the kind
+	// (an orchestrator is only the orchestrator role), is a 422. Under the project's
+	// strictRoles a writer or controller cannot run in the auto or
+	// bypass-permissions mode (422).
+	Role domain.SessionRole `json:"role,omitempty" enum:"orchestrator,controller,writer,reviewer"`
 	// Mode picks the conversation controller: chat talks to the agent over a
 	// structured connection, tui opens the agent's native terminal interface.
 	// Omitted resolves to the daemon-owned preference, which defaults to Chat for

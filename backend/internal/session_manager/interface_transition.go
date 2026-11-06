@@ -550,7 +550,7 @@ func (m *Manager) runInterfaceTransition(
 				fail("HANDOFF_STORAGE_BRIDGE_FAILED", projectErr)
 				return
 			}
-			env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+			env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Role)
 			m.augmentAgentRuntimeEnv(bridge, env)
 			if bridgeErr := storageBridge.PrepareInterfaceHandoffStorage(ctx, ports.SessionRef{
 				ID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath,
@@ -862,7 +862,7 @@ func (m *Manager) persistedNativeConversationID(
 	if err != nil {
 		return "", err
 	}
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Role)
 	exists, err := probe.NativeConversationExists(ctx, ports.SessionRef{
 		ID:            string(rec.ID),
 		WorkspacePath: rec.Metadata.WorkspacePath,
@@ -909,7 +909,7 @@ func (m *Manager) preflightInterfaceTarget(
 		return err
 	}
 	config := restoredAgentConfig(rec, project.Config)
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env, rec.Role)
 	pinRuntimePermissionEnv(env, config.Permissions)
 	m.augmentAgentRuntimeEnv(agent, env)
 	if err := m.preflightLaunchAuth(ctx, agent, rec, env); err != nil {
@@ -946,7 +946,7 @@ func (m *Manager) preflightTerminalLaunch(
 	project domain.ProjectRecord,
 	nativeConversationID string,
 ) error {
-	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.ProjectID, rec.ID, rec.RequestedOutput, false)
+	systemPrompt, err := m.buildSystemPrompt(ctx, rec.Kind, rec.Role, rec.ProjectID, rec.ID, rec.RequestedOutput, false)
 	if err != nil {
 		return err
 	}

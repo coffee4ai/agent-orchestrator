@@ -190,6 +190,7 @@ func TestWriteError_TypedKindsUnchanged(t *testing.T) {
 		{apierr.NotFound("NF", "x"), http.StatusNotFound},
 		{apierr.Conflict("C", "x", nil), http.StatusConflict},
 		{apierr.Forbidden("F", "x"), http.StatusForbidden},
+		{apierr.Unprocessable("U", "x", nil), http.StatusUnprocessableEntity},
 	} {
 		status, _ := statusOf(t, tc.err)
 		if status != tc.status {

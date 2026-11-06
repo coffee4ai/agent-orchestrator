@@ -4474,6 +4474,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Found
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
         "500":
           content:
             application/json:
@@ -15942,6 +15948,8 @@ components:
           - cline
           - autohand
           type: string
+        role:
+          type: string
         scmStatus:
           enum:
           - pr_open
@@ -18800,6 +18808,10 @@ components:
           type: string
         containerReap:
           $ref: '#/components/schemas/ContainerReapConfig'
+        controllerRules:
+          type: string
+        controllerRulesFile:
+          type: string
         defaultBranch:
           type: string
         env:
@@ -18812,6 +18824,14 @@ components:
           type: string
         orchestratorRulesFile:
           type: string
+        permissionsAllow:
+          additionalProperties:
+            additionalProperties:
+              items:
+                type: string
+              type: array
+            type: object
+          type: object
         postCreate:
           items:
             type: string
@@ -18826,6 +18846,10 @@ components:
           type: array
         sessionPrefix:
           type: string
+        strictRoles:
+          type:
+          - "null"
+          - boolean
         symlinks:
           items:
             type: string
@@ -20499,6 +20523,12 @@ components:
       properties:
         config:
           $ref: '#/components/schemas/ProjectConfig'
+        permissionsFile:
+          maxLength: 4096
+          type: string
+        permissionsRepo:
+          maxLength: 256
+          type: string
       required:
       - config
       type: object
@@ -21290,6 +21320,13 @@ components:
         requestedOutput:
           enum:
           - artifact
+          type: string
+        role:
+          enum:
+          - orchestrator
+          - controller
+          - writer
+          - reviewer
           type: string
         trackerProvider:
           enum:

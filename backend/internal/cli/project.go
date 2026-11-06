@@ -119,21 +119,36 @@ type projectConfig struct {
 	AgentRulesFile        string               `json:"agentRulesFile,omitempty"`
 	OrchestratorRules     string               `json:"orchestratorRules,omitempty"`
 	OrchestratorRulesFile string               `json:"orchestratorRulesFile,omitempty"`
-	AgentConfig           agentConfig          `json:"agentConfig,omitempty"`
-	Worker                roleOverride         `json:"worker,omitempty"`
-	Orchestrator          roleOverride         `json:"orchestrator,omitempty"`
-	TrackerIntake         trackerIntakeConfig  `json:"trackerIntake,omitempty"`
-	AutoReview            bool                 `json:"autoReview,omitempty"`
+	ControllerRules       string               `json:"controllerRules,omitempty"`
+	ControllerRulesFile   string               `json:"controllerRulesFile,omitempty"`
+	// StrictRoles is a pointer so set-config sends it only when --strict-roles
+	// is given; the daemon keeps the stored value when it is omitted.
+	StrictRoles      *bool                          `json:"strictRoles,omitempty"`
+	PermissionsAllow map[string]map[string][]string `json:"permissionsAllow,omitempty"`
+	AgentConfig      agentConfig                    `json:"agentConfig,omitempty"`
+	Worker           roleOverride                   `json:"worker,omitempty"`
+	Orchestrator     roleOverride                   `json:"orchestrator,omitempty"`
+	TrackerIntake    trackerIntakeConfig            `json:"trackerIntake,omitempty"`
+	AutoReview       bool                           `json:"autoReview,omitempty"`
 	// WorkersRequestReview must round-trip through set-config so a CLI edit
 	// of another field never silently turns it off.
 	WorkersRequestReview bool             `json:"workersRequestReview,omitempty"`
 	Reviewers            []reviewerConfig `json:"reviewers,omitempty"`
 }
 
+// rootWorkspaceRepoName mirrors domain.RootWorkspaceRepoName: the
+// permissionsAllow key for a project's root repository.
+const rootWorkspaceRepoName = "__root__"
+
 // setConfigRequest mirrors the daemon's SetConfigInput body for
 // PUT /api/v1/projects/{id}/config.
 type setConfigRequest struct {
 	Config projectConfig `json:"config"`
+	// PermissionsFile is a repo-relative JSON file (role -> allow rules) the
+	// daemon reads from the project root and stores under
+	// permissionsAllow[PermissionsRepo].
+	PermissionsFile string `json:"permissionsFile,omitempty"`
+	PermissionsRepo string `json:"permissionsRepo,omitempty"`
 }
 
 type projectSetConfigOptions struct {
@@ -148,6 +163,12 @@ type projectSetConfigOptions struct {
 	agentRulesFile        string
 	orchestratorRules     string
 	orchestratorRulesFile string
+	controllerRules       string
+	controllerRulesFile   string
+	strictRoles           *bool
+	strictRolesFlag       bool
+	permissionsFile       string
+	repo                  string
 	env                   []string
 	symlink               []string
 	postCreate            []string
@@ -269,11 +290,13 @@ func newProjectAddCommand(ctx *commandContext) *cobra.Command {
 			if opts.name != "" {
 				req.Name = &opts.name
 			}
-			if opts.workerAgent != "" || opts.orchestratorAgent != "" {
-				req.Config = &projectConfig{
-					Worker:       roleOverride{Agent: opts.workerAgent},
-					Orchestrator: roleOverride{Agent: opts.orchestratorAgent},
-				}
+			// The fork registers every project with role enforcement on;
+			// `ao project set-config --strict-roles=false` turns it off.
+			strictRoles := true
+			req.Config = &projectConfig{
+				Worker:       roleOverride{Agent: opts.workerAgent},
+				Orchestrator: roleOverride{Agent: opts.orchestratorAgent},
+				StrictRoles:  &strictRoles,
 			}
 			var res projectResult
 			if err := ctx.postJSON(cmd.Context(), "projects", req, &res); err != nil {
@@ -314,11 +337,26 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := strings.TrimSpace(args[0])
+			if cmd.Flags().Changed("strict-roles") {
+				opts.strictRoles = &opts.strictRolesFlag
+			}
+			opts.permissionsFile = strings.TrimSpace(opts.permissionsFile)
+			opts.repo = strings.TrimSpace(opts.repo)
+			if opts.repo != "" && opts.permissionsFile == "" {
+				return usageError{errors.New("--repo requires --permissions-file")}
+			}
 			config, err := buildProjectConfig(opts)
 			if err != nil {
 				return err
 			}
 			req := setConfigRequest{Config: config}
+			if opts.permissionsFile != "" {
+				req.PermissionsFile = opts.permissionsFile
+				req.PermissionsRepo = opts.repo
+				if req.PermissionsRepo == "" {
+					req.PermissionsRepo = rootWorkspaceRepoName
+				}
+			}
 			var res projectResult
 			if err := ctx.putJSON(cmd.Context(), "projects/"+url.PathEscape(id)+"/config", req, &res); err != nil {
 				return err
@@ -342,6 +380,11 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.agentRulesFile, "agent-rules-file", "", "Repo-relative file containing worker standing instructions")
 	f.StringVar(&opts.orchestratorRules, "orchestrator-rules", "", "Project-specific standing instructions for orchestrator sessions")
 	f.StringVar(&opts.orchestratorRulesFile, "orchestrator-rules-file", "", "Repo-relative file containing orchestrator standing instructions")
+	f.StringVar(&opts.controllerRules, "controller-rules", "", "Project-specific standing instructions for controller sessions (in place of --agent-rules)")
+	f.StringVar(&opts.controllerRulesFile, "controller-rules-file", "", "Repo-relative file containing controller standing instructions")
+	f.BoolVar(&opts.strictRolesFlag, "strict-roles", false, "Enforce session roles: per-role deny rules in each session's settings, and no auto or bypass-permissions mode for writers and controllers (omitted keeps the stored setting)")
+	f.StringVar(&opts.permissionsFile, "permissions-file", "", "Repo-relative JSON file of allow rules by role ({\"writer\": [\"Bash(go test:*)\"]}), read by the daemon from the project root; omitted keeps the stored allow rules")
+	f.StringVar(&opts.repo, "repo", "", "Repository the --permissions-file rules apply to: a workspace child's name or __root__ (default: __root__)")
 	f.StringArrayVar(&opts.env, "env", nil, "Env var KEY=VALUE forwarded into sessions (repeatable)")
 	f.StringArrayVar(&opts.symlink, "symlink", nil, "Repo-relative path to symlink into workspaces (repeatable)")
 	f.StringArrayVar(&opts.postCreate, "post-create", nil, "Command to run after workspace creation (repeatable)")
@@ -350,7 +393,7 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.trackerAssignee, "tracker-assignee", "", "Issue assignee required for intake eligibility")
 	f.StringArrayVar(&opts.reviewers, "reviewer", nil, "Reviewer harness that reviews worker PRs (repeatable; e.g. claude-code)")
 	f.StringVar(&opts.configJSON, "config-json", "", "Full config as a JSON object (overrides field flags)")
-	f.BoolVar(&opts.clear, "clear", false, "Clear all config")
+	f.BoolVar(&opts.clear, "clear", false, "Clear the config except strictRoles and permissionsAllow, which are kept (turn role enforcement off with --strict-roles=false; permissionsAllow cannot be cleared from the CLI today)")
 	f.BoolVar(&opts.json, "json", false, "Output the updated project as JSON")
 	return cmd
 }
@@ -386,6 +429,9 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 		AgentRulesFile:        opts.agentRulesFile,
 		OrchestratorRules:     opts.orchestratorRules,
 		OrchestratorRulesFile: opts.orchestratorRulesFile,
+		ControllerRules:       opts.controllerRules,
+		ControllerRulesFile:   opts.controllerRulesFile,
+		StrictRoles:           opts.strictRoles,
 		AgentConfig:           agentConfig{Model: opts.model, Permissions: opts.permission},
 		Worker:                roleOverride{Agent: opts.workerAgent},
 		Orchestrator:          roleOverride{Agent: opts.orchestratorAgent},
@@ -396,7 +442,7 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 		},
 		Reviewers: reviewersForFlags(opts.reviewers),
 	}
-	if reflect.DeepEqual(cfg, projectConfig{}) {
+	if reflect.DeepEqual(cfg, projectConfig{}) && opts.permissionsFile == "" {
 		return projectConfig{}, usageError{errors.New("usage: provide at least one config flag, --config-json, or --clear")}
 	}
 	return cfg, nil

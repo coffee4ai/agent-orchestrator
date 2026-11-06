@@ -71,9 +71,20 @@ type UpdateSettingsInput struct {
 }
 
 // SetConfigInput is the body shape for PUT /api/v1/projects/{id}/config. Config
-// replaces the project's stored config wholesale; a zero-value config clears it.
+// replaces the project's stored config wholesale; a zero-value config clears it,
+// except that strictRoles and permissionsAllow keep their stored values when
+// Config omits them (so an edit of another field never turns role enforcement
+// off).
 type SetConfigInput struct {
 	Config domain.ProjectConfig `json:"config"`
+	// PermissionsFile is a repo-relative JSON file, an object of role to allow
+	// rules, read from the project root and stored under
+	// config.permissionsAllow[PermissionsRepo]. A file that is missing, not
+	// that shape, or names an unknown role is a 422.
+	PermissionsFile string `json:"permissionsFile,omitempty" maxLength:"4096"`
+	// PermissionsRepo is the repository the file's rules apply to: a workspace
+	// child's name or "__root__" (the default).
+	PermissionsRepo string `json:"permissionsRepo,omitempty" maxLength:"256"`
 }
 
 // RemoveResult reports what DELETE /api/v1/projects/{id} actually did.

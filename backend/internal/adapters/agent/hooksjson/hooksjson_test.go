@@ -1,6 +1,7 @@
 package hooksjson
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -198,5 +199,163 @@ func assertUnknownUserHookFields(t *testing.T, hooksPath string) {
 	}
 	if !reflect.DeepEqual(userHook, want) {
 		t.Fatalf("user hook fields changed\nwant: %#v\n got: %#v", want, userHook)
+	}
+}
+
+func permissionsTestManager(hooksPath string, perms *Permissions) Manager {
+	return Manager{
+		Label:         "test",
+		CommandPrefix: "ao hooks test ",
+		Timeout:       30,
+		Path:          func(string) string { return hooksPath },
+		Managed:       []HookSpec{{Event: "Stop", Command: "ao hooks test stop"}},
+		Permissions:   perms,
+	}
+}
+
+type permissionsFile struct {
+	Theme       string              `json:"theme"`
+	Permissions map[string][]string `json:"permissions"`
+	Managed     map[string][]string `json:"aoManagedPermissions"`
+	Hooks       map[string]any      `json:"hooks"`
+}
+
+func readPermissionsFile(t *testing.T, path string) permissionsFile {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got permissionsFile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("parse %s: %v\n%s", path, err, data)
+	}
+	return got
+}
+
+// TestInstallWritesPermissionsBesideHooks asserts AO's deny and allow entries
+// land in the top-level permissions key next to the user's own entries, are
+// listed under aoManagedPermissions, and that Uninstall removes only them.
+func TestInstallWritesPermissionsBesideHooks(t *testing.T) {
+	workspace := t.TempDir()
+	hooksPath := filepath.Join(workspace, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hooksPath, []byte(`{"theme":"x","permissions":{"allow":["Bash(ls:*)"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deny := []string{"Bash(git push:*)", "Bash(rm -rf /:*)"}
+	allow := []string{"Bash(go test:*)"}
+	manager := permissionsTestManager(hooksPath, &Permissions{Deny: deny, Allow: allow})
+	if err := manager.Install(t.Context(), workspace); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readPermissionsFile(t, hooksPath)
+	if got.Theme != "x" {
+		t.Fatalf("theme = %q, want the user's key kept", got.Theme)
+	}
+	if want := []string{"Bash(ls:*)", "Bash(go test:*)"}; !reflect.DeepEqual(got.Permissions["allow"], want) {
+		t.Fatalf("permissions.allow = %#v, want %#v", got.Permissions["allow"], want)
+	}
+	if !reflect.DeepEqual(got.Permissions["deny"], deny) {
+		t.Fatalf("permissions.deny = %#v, want exactly AO's %#v", got.Permissions["deny"], deny)
+	}
+	if want := map[string][]string{"deny": deny, "allow": allow}; !reflect.DeepEqual(got.Managed, want) {
+		t.Fatalf("aoManagedPermissions = %#v, want %#v", got.Managed, want)
+	}
+	if got.Hooks["Stop"] == nil {
+		t.Fatalf("hooks = %#v, want the managed Stop hook beside the permissions", got.Hooks)
+	}
+
+	if err := manager.Uninstall(t.Context(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	got = readPermissionsFile(t, hooksPath)
+	if got.Theme != "x" {
+		t.Fatalf("theme after uninstall = %q", got.Theme)
+	}
+	if want := map[string][]string{"allow": {"Bash(ls:*)"}}; !reflect.DeepEqual(got.Permissions, want) {
+		t.Fatalf("permissions after uninstall = %#v, want only the user's %#v", got.Permissions, want)
+	}
+	if got.Managed != nil {
+		t.Fatalf("aoManagedPermissions after uninstall = %#v, want removed", got.Managed)
+	}
+}
+
+// TestInstallIdempotentForPermissions asserts a second Install with the same
+// permissions rewrites the file byte for byte, and a changed set replaces AO's
+// previous entries without touching the user's.
+func TestInstallIdempotentForPermissions(t *testing.T) {
+	workspace := t.TempDir()
+	hooksPath := filepath.Join(workspace, "settings.local.json")
+	if err := os.WriteFile(hooksPath, []byte(`{"permissions":{"deny":["Read(./secrets/**)"],"allow":["Bash(ls:*)"],"defaultMode":"default"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := permissionsTestManager(hooksPath, &Permissions{Deny: []string{"Bash(git push:*)"}, Allow: []string{"Bash(go test:*)"}})
+	if err := manager.Install(t.Context(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Install(t.Context(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("reinstall changed the file\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+
+	changed := permissionsTestManager(hooksPath, &Permissions{Deny: []string{"Bash(ao spawn:*)"}})
+	if err := changed.Install(t.Context(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Permissions map[string]any `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"deny":        []any{"Read(./secrets/**)", "Bash(ao spawn:*)"},
+		"allow":       []any{"Bash(ls:*)"},
+		"defaultMode": "default",
+	}
+	if !reflect.DeepEqual(settings.Permissions, want) {
+		t.Fatalf("permissions after a changed install = %#v, want %#v", settings.Permissions, want)
+	}
+}
+
+// TestInstallWithoutPermissionsLeavesManagedPermissionsUntouched asserts a
+// Manager with no Permissions leaves AO's earlier entries in place.
+func TestInstallWithoutPermissionsLeavesManagedPermissionsUntouched(t *testing.T) {
+	workspace := t.TempDir()
+	hooksPath := filepath.Join(workspace, "settings.local.json")
+	if err := permissionsTestManager(hooksPath, &Permissions{Deny: []string{"Bash(git push:*)"}}).Install(t.Context(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := permissionsTestManager(hooksPath, nil).Install(t.Context(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("install without permissions changed the file\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
 }

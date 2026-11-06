@@ -25,6 +25,42 @@ const (
 	KindOrchestrator SessionKind = "orchestrator"
 )
 
+// SessionRole is what a session may do, fixed at spawn and enforced (under a
+// project's strictRoles) by the per-role permission rules AO writes into the
+// agent's settings. It is orthogonal to SessionKind: an orchestrator-kind
+// session is the orchestrator role; a worker-kind session is a writer, a
+// controller or a reviewer.
+type SessionRole string
+
+// Session roles. The empty role is a session spawned before roles existed.
+const (
+	SessionRoleOrchestrator SessionRole = "orchestrator"
+	SessionRoleController   SessionRole = "controller"
+	SessionRoleWriter       SessionRole = "writer"
+	SessionRoleReviewer     SessionRole = "reviewer"
+)
+
+// SessionRoles lists every valid role, in the order help text names them.
+var SessionRoles = []SessionRole{SessionRoleOrchestrator, SessionRoleController, SessionRoleWriter, SessionRoleReviewer}
+
+// Valid reports whether r is one of the four session roles.
+func (r SessionRole) Valid() bool {
+	switch r {
+	case SessionRoleOrchestrator, SessionRoleController, SessionRoleWriter, SessionRoleReviewer:
+		return true
+	}
+	return false
+}
+
+// DefaultSessionRole is the role a spawn that names none gets: the
+// orchestrator role for an orchestrator, a writer for a worker.
+func DefaultSessionRole(kind SessionKind) SessionRole {
+	if kind == KindOrchestrator {
+		return SessionRoleOrchestrator
+	}
+	return SessionRoleWriter
+}
+
 // ConversationCheckpointState records which main-turn boundaries AO has
 // durably observed for the hook-derived replay checkpoint. The legacy value is
 // intentionally distinct: rows written before owner/event scoping may still be
@@ -293,6 +329,9 @@ type SessionRecord struct {
 	// worktree alone), RootWorkspaceRepoName (the root alone), or
 	// WorkspaceRepoNameAll / empty (the root with every child nested in it).
 	RepoName string `json:"repoName,omitempty"`
+	// Role is what the session may do (orchestrator, controller, writer or
+	// reviewer), fixed at spawn; empty for a session spawned before roles.
+	Role SessionRole `json:"role,omitempty"`
 	// Mode is the session's currently committed conversation controller. Every
 	// send, restore, kill, and reaper decision dispatches from it. Only the
 	// durable interface-transition coordinator may change it; the daemon default

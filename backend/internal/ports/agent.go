@@ -799,6 +799,19 @@ type WorkspaceHookConfig struct {
 	SystemPrompt     string
 	SystemPromptFile string
 	WorkspacePath    string
+	// Role is the session's role. Empty (a caller installing hooks outside a
+	// session's own launch, such as the native reviewer's PreLaunch in the
+	// worker's checkout) leaves the permission rules AO manages in the
+	// workspace untouched; adapters write no rules for the reviewer role,
+	// whose list travels on its launch.
+	Role domain.SessionRole
+	// PermissionsDeny and PermissionsAllow are the permission rules the
+	// session manager resolved for Role: the role's deny list when the
+	// project enforces strictRoles (nil otherwise) and the project's
+	// permissionsAllow entry for the session's repository and role. Adapters
+	// that write a permission file replace AO's previous entries with them.
+	PermissionsDeny  []string
+	PermissionsAllow []string
 }
 
 // RestoreConfig carries inputs needed to continue an existing native agent session.
