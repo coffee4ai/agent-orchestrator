@@ -1075,16 +1075,26 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// Resolve the effective agent config (project base + role override + spawn
 	// override) and validate the model before any durable state is created. A
 	// model the harness cannot honor should not leave a seed row behind.
+	if cfg.Role == "" {
+		cfg.Role = domain.DefaultSessionRole(cfg.Kind)
+	}
+	// Under strictRoles a writer or controller whose mode nobody configured
+	// runs in default rather than the upstream auto; a configured auto or
+	// bypass-permissions is refused. Resolved here, before the upstream default
+	// is applied, so "unset" is still distinguishable.
+	configuredMode := effectiveAgentConfig(cfg.Harness, cfg.Kind, project.Config).Permissions
+	if cfg.AgentConfig.Permissions != "" {
+		configuredMode = cfg.AgentConfig.Permissions
+	}
+	roleMode, err := resolveRolePermissionMode(project.Config, cfg.Role, configuredMode)
+	if err != nil {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+	}
+	cfg.AgentConfig.Permissions = roleMode
 	explicitModel := cfg.AgentConfig.Model != ""
 	agentConfig := applySpawnAgentConfig(effectiveAgentConfig(cfg.Harness, cfg.Kind, project.Config), cfg.AgentConfig)
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
-	}
-	if cfg.Role == "" {
-		cfg.Role = domain.DefaultSessionRole(cfg.Kind)
-	}
-	if err := checkRolePermissionMode(project.Config, cfg.Role, agentConfig.Permissions); err != nil {
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
 	}
 	// Resolve the controller mode here, before anything durable is created, for
 	// the same reason an unknown harness is rejected above: an explicit Chat

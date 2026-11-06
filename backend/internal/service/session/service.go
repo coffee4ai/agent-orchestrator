@@ -393,7 +393,9 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 // resolveSpawnRole returns the role a spawn runs as: the named one, or for an
 // empty role the kind's default (writer for a worker, orchestrator for an
 // orchestrator), so desktop, tracker and automation spawns that name no role
-// keep working. A role outside the four is a 422.
+// keep working. A role outside the four is a 422, and so is a role that
+// contradicts the kind: an orchestrator is only the orchestrator role, and a
+// worker is a writer, controller or reviewer.
 func resolveSpawnRole(kind domain.SessionKind, role domain.SessionRole) (domain.SessionRole, error) {
 	if role == "" {
 		return domain.DefaultSessionRole(kind), nil
@@ -401,6 +403,10 @@ func resolveSpawnRole(kind domain.SessionKind, role domain.SessionRole) (domain.
 	if !role.Valid() {
 		return "", apierr.Unprocessable("INVALID_SESSION_ROLE",
 			fmt.Sprintf("role %q is not a session role: use orchestrator, controller, writer or reviewer", role), nil)
+	}
+	if (kind == domain.KindOrchestrator) != (role == domain.SessionRoleOrchestrator) {
+		return "", apierr.Unprocessable("ROLE_KIND_MISMATCH",
+			fmt.Sprintf("role %q does not fit kind %q: an orchestrator is the orchestrator role; a worker is a writer, controller or reviewer", role, kind), nil)
 	}
 	return role, nil
 }

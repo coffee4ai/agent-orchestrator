@@ -393,7 +393,7 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.trackerAssignee, "tracker-assignee", "", "Issue assignee required for intake eligibility")
 	f.StringArrayVar(&opts.reviewers, "reviewer", nil, "Reviewer harness that reviews worker PRs (repeatable; e.g. claude-code)")
 	f.StringVar(&opts.configJSON, "config-json", "", "Full config as a JSON object (overrides field flags)")
-	f.BoolVar(&opts.clear, "clear", false, "Clear all config")
+	f.BoolVar(&opts.clear, "clear", false, "Clear the config except strictRoles and permissionsAllow, which are kept (turn role enforcement off with --strict-roles=false; permissionsAllow cannot be cleared from the CLI today)")
 	f.BoolVar(&opts.json, "json", false, "Output the updated project as JSON")
 	return cmd
 }

@@ -6473,3 +6473,32 @@ func TestToSpawnAPIErrorRefusesPermissionModeForRole(t *testing.T) {
 		t.Fatalf("mapped = %#v, want a 422 PERMISSION_MODE_NOT_ALLOWED_FOR_ROLE", mapped)
 	}
 }
+
+// TestSpawnRefusesRoleKindMismatch asserts a role that contradicts the kind is
+// a 422 in both directions: a worker cannot be the orchestrator role, and an
+// orchestrator cannot be a writer, controller or reviewer.
+func TestSpawnRefusesRoleKindMismatch(t *testing.T) {
+	cases := []struct {
+		kind domain.SessionKind
+		role domain.SessionRole
+	}{
+		{kind: domain.KindWorker, role: domain.SessionRoleOrchestrator},
+		{kind: domain.KindOrchestrator, role: domain.SessionRoleWriter},
+		{kind: domain.KindOrchestrator, role: domain.SessionRoleController},
+		{kind: domain.KindOrchestrator, role: domain.SessionRoleReviewer},
+	}
+	for _, tc := range cases {
+		st := newFakeStore()
+		st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+		fc := &fakeCommander{}
+		svc := &Service{manager: fc, store: st}
+		_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: tc.kind, Role: tc.role})
+		var apiErr *apierr.Error
+		if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindUnprocessable || apiErr.Code != "ROLE_KIND_MISMATCH" {
+			t.Fatalf("kind=%s role=%s: err = %#v, want a 422 ROLE_KIND_MISMATCH", tc.kind, tc.role, err)
+		}
+		if fc.spawned {
+			t.Fatalf("kind=%s role=%s reached the manager", tc.kind, tc.role)
+		}
+	}
+}

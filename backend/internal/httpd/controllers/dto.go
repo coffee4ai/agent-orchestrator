@@ -549,7 +549,8 @@ type SpawnSessionRequest struct {
 	RepoName string `json:"repoName,omitempty" maxLength:"256"`
 	// Role is what the session may do: orchestrator, controller, writer or
 	// reviewer. Omitted defaults by kind (writer for a worker, orchestrator for
-	// an orchestrator); any other value is a 422. Under the project's
+	// an orchestrator); any other value, or a role that contradicts the kind
+	// (an orchestrator is only the orchestrator role), is a 422. Under the project's
 	// strictRoles a writer or controller cannot run in the auto or
 	// bypass-permissions mode (422).
 	Role domain.SessionRole `json:"role,omitempty" enum:"orchestrator,controller,writer,reviewer"`

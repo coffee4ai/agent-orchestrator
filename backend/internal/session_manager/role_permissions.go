@@ -24,20 +24,28 @@ func rolePermissionRules(projectConfig domain.ProjectConfig, role domain.Session
 }
 
 // ErrPermissionModeNotAllowedForRole reports a spawn, under a project's
-// strictRoles, of a writer or controller whose resolved permission mode would
-// let it run tools without the deny rules applying (auto or
+// strictRoles, of a writer or controller whose configured permission mode
+// would let it run tools without the deny rules applying (auto or
 // bypass-permissions).
 var ErrPermissionModeNotAllowedForRole = errors.New("permission mode not allowed for role")
 
-// checkRolePermissionMode refuses, under strictRoles, a writer or controller
-// whose resolved permission mode is auto or bypass-permissions.
-func checkRolePermissionMode(projectConfig domain.ProjectConfig, role domain.SessionRole, mode domain.PermissionMode) error {
+// resolveRolePermissionMode returns the permission mode a spawn runs in.
+// configured is the mode set by the spawn, the role override or the project,
+// empty when none set one. Without strictRoles, or for the orchestrator and
+// reviewer roles, it is returned unchanged (an empty mode later takes the
+// upstream auto default). Under strictRoles a writer or controller with no
+// configured mode runs in default, and a configured auto or
+// bypass-permissions is refused.
+func resolveRolePermissionMode(projectConfig domain.ProjectConfig, role domain.SessionRole, configured domain.PermissionMode) (domain.PermissionMode, error) {
 	if !projectConfig.StrictRolesEnabled() || (role != domain.SessionRoleWriter && role != domain.SessionRoleController) {
-		return nil
+		return configured, nil
 	}
-	switch ports.NormalizePermissionMode(mode) {
+	if configured == "" {
+		return domain.PermissionModeDefault, nil
+	}
+	switch ports.NormalizePermissionMode(configured) {
 	case ports.PermissionModeAuto, ports.PermissionModeBypassPermissions:
-		return fmt.Errorf("%w: role %q cannot run in %q mode while the project enforces strictRoles", ErrPermissionModeNotAllowedForRole, role, mode)
+		return "", fmt.Errorf("%w: role %q cannot run in %q mode while the project enforces strictRoles", ErrPermissionModeNotAllowedForRole, role, configured)
 	}
-	return nil
+	return configured, nil
 }

@@ -12616,10 +12616,65 @@ func TestSpawnRefusesAutoAndBypassForWritersAndControllers(t *testing.T) {
 			}
 		}
 	}
-	// The default permission mode resolves to auto, so a strict writer that
-	// names no mode is refused too.
-	m, _, _, _ := newRoleManager(domain.ProjectConfig{Worker: domain.RoleOverride{Harness: domain.HarnessCodex}, StrictRoles: boolPtr(true)})
-	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); !errors.Is(err, ErrPermissionModeNotAllowedForRole) {
-		t.Fatalf("strict writer with the default (auto) mode: err = %v, want ErrPermissionModeNotAllowedForRole", err)
+}
+
+// TestStrictRolesUnsetModeRunsWriterInDefault asserts that under strictRoles a
+// writer or controller whose permission mode nobody configured (project, role
+// override and spawn all silent) runs in default instead of the upstream auto,
+// and that without strictRoles the upstream auto default is unchanged.
+func TestStrictRolesUnsetModeRunsWriterInDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		strict bool
+		role   domain.SessionRole
+		want   domain.PermissionMode
+	}{
+		{name: "strict writer", strict: true, role: domain.SessionRoleWriter, want: domain.PermissionModeDefault},
+		{name: "strict controller", strict: true, role: domain.SessionRoleController, want: domain.PermissionModeDefault},
+		{name: "strict default role", strict: true, want: domain.PermissionModeDefault},
+		{name: "relaxed writer keeps upstream auto", strict: false, role: domain.SessionRoleWriter, want: domain.PermissionModeAuto},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, rt, _ := newRoleManager(domain.ProjectConfig{Worker: domain.RoleOverride{Harness: domain.HarnessCodex}, StrictRoles: boolPtr(tc.strict)})
+			rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Role: tc.role})
+			if err != nil {
+				t.Fatalf("spawn: %v", err)
+			}
+			if got := st.sessions[rec.ID].Metadata.Permissions; got != tc.want {
+				t.Fatalf("stored permission mode = %q, want %q", got, tc.want)
+			}
+			if got := rt.lastCfg.Env[EnvPermissionMode]; got != string(tc.want) {
+				t.Fatalf("runtime %s = %q, want %q", EnvPermissionMode, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStrictRolesExplicitAutoStillRefused asserts an auto or
+// bypass-permissions mode configured anywhere (project, worker role override
+// or the spawn request) is still refused for a strict writer.
+func TestStrictRolesExplicitAutoStillRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		project domain.ProjectConfig
+		spawn   domain.PermissionMode
+	}{
+		{name: "project auto", project: domain.ProjectConfig{AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeAuto}}},
+		{name: "role override bypass", project: domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Permissions: domain.PermissionModeBypassPermissions}}}},
+		{name: "spawn auto", spawn: domain.PermissionModeAuto},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.project
+			cfg.Worker.Harness = domain.HarnessCodex
+			cfg.StrictRoles = boolPtr(true)
+			m, st, _, _ := newRoleManager(cfg)
+			_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, AgentConfig: ports.AgentConfig{Permissions: tc.spawn}})
+			if !errors.Is(err, ErrPermissionModeNotAllowedForRole) {
+				t.Fatalf("err = %v, want ErrPermissionModeNotAllowedForRole", err)
+			}
+			if len(st.sessions) != 0 {
+				t.Fatalf("refused spawn left sessions %#v", st.sessions)
+			}
+		})
 	}
 }
