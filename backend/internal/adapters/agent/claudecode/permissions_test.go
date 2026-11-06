@@ -19,10 +19,12 @@ func TestDenyRulesForRoles(t *testing.T) {
 	writer := []string{
 		"Bash(git push:*)", "Bash(gh pr create:*)", "Bash(gh pr merge:*)",
 		"Bash(ao pr merge:*)", "Bash(ao spawn:*)", "Bash(ao decision record:*)",
+		"Bash(ao project set-config:*)", "Bash(ao project add:*)", "Bash(ao project rm:*)",
 	}
 	controller := []string{
 		"Bash(ao pr merge:*)", "Bash(gh pr merge:*)", "Bash(ao spawn:*)",
 		"Bash(ao decision record:*)", "Bash(ao session handoff-confirm:*)",
+		"Bash(ao project set-config:*)", "Bash(ao project add:*)", "Bash(ao project rm:*)",
 	}
 	reviewer := []string{"Bash(ao session get:*)", "Bash(ao session history:*)", "Bash(ao session export:*)"}
 	cases := map[domain.SessionRole][]string{

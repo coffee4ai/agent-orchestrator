@@ -88,3 +88,21 @@ func TestAllowlistCheckRejectsBroadPrefixCoveringDenied(t *testing.T) {
 		}
 	}
 }
+
+func TestAllowlistCheckRejectsProjectConfigChanges(t *testing.T) {
+	cases := []struct{ name, content, entry string }{
+		{"writer", `{"writer":["Bash(ao project set-config:*)"],"controller":[],"orchestrator":[]}`, "Bash(ao project set-config:*)"},
+		{"controller", `{"writer":[],"controller":["Bash(ao project:*)"],"orchestrator":[]}`, "Bash(ao project:*)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runAllowlistCheck(t, tc.content)
+			if err == nil {
+				t.Fatalf("expected non-zero exit: %s", out)
+			}
+			if !strings.Contains(out, tc.name) || !strings.Contains(out, tc.entry) {
+				t.Fatalf("message must name role and entry: %s", out)
+			}
+		})
+	}
+}
