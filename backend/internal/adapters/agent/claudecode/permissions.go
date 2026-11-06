@@ -23,7 +23,7 @@ var destructiveDenyRules = []string{
 }
 
 // writerDenyRules keep a writer inside its worktree: it neither publishes
-// (push, PR create or merge) nor spawns sessions nor records decisions.
+// (push, PR create or merge) nor spawns sessions, records decisions nor changes project configuration.
 var writerDenyRules = []string{
 	"Bash(git push:*)",
 	"Bash(gh pr create:*)",
@@ -31,16 +31,22 @@ var writerDenyRules = []string{
 	"Bash(ao pr merge:*)",
 	"Bash(ao spawn:*)",
 	"Bash(ao decision record:*)",
+	"Bash(ao project set-config:*)",
+	"Bash(ao project add:*)",
+	"Bash(ao project rm:*)",
 }
 
 // controllerDenyRules leave a controller its pushes and PRs but not merges,
-// spawns, decisions, or confirming its own hand-off.
+// spawns, decisions, project configuration changes, or confirming its own hand-off.
 var controllerDenyRules = []string{
 	"Bash(ao pr merge:*)",
 	"Bash(gh pr merge:*)",
 	"Bash(ao spawn:*)",
 	"Bash(ao decision record:*)",
 	"Bash(ao session handoff-confirm:*)",
+	"Bash(ao project set-config:*)",
+	"Bash(ao project add:*)",
+	"Bash(ao project rm:*)",
 }
 
 // reviewerDenyRules keep a reviewer from reading other sessions' transcripts,

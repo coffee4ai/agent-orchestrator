@@ -16,8 +16,8 @@ DESTRUCTIVE=(
   "git push --force" "git push -f" "git reset --hard" "git clean -fdx" "git clean -fd"
   "git branch -D" "rm -rf /" "rm -rf ~" "rm -rf .."
 )
-DENY_writer=("git push" "gh pr create" "gh pr merge" "ao pr merge" "ao spawn" "ao decision record" "${DESTRUCTIVE[@]}")
-DENY_controller=("gh pr merge" "ao pr merge" "ao spawn" "ao decision record" "ao session handoff-confirm" "${DESTRUCTIVE[@]}")
+DENY_writer=("git push" "gh pr create" "gh pr merge" "ao pr merge" "ao spawn" "ao decision record" "ao project set-config" "ao project add" "ao project rm" "${DESTRUCTIVE[@]}")
+DENY_controller=("gh pr merge" "ao pr merge" "ao spawn" "ao decision record" "ao session handoff-confirm" "ao project set-config" "ao project add" "ao project rm" "${DESTRUCTIVE[@]}")
 DENY_orchestrator=("${DESTRUCTIVE[@]}")
 # Bases a role is explicitly granted although the daemon still denies their destructive variants
 # (the daemon deny list wins over the allow list).
