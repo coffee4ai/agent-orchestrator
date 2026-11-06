@@ -58,3 +58,33 @@ func TestAllowlistCheckRejectsControllerMerge(t *testing.T) {
 		t.Fatalf("expected non-zero exit: %s", out)
 	}
 }
+
+func TestAllowlistCheckRejectsSpaceBeforeStarSuffix(t *testing.T) {
+	out, err := runAllowlistCheck(t, `{"writer":["Bash(git add :*)"],"controller":[],"orchestrator":[]}`)
+	if err == nil {
+		t.Fatalf("expected non-zero exit: %s", out)
+	}
+	if !strings.Contains(out, "writer") || !strings.Contains(out, "Bash(git add :*)") {
+		t.Fatalf("message must name role and entry: %s", out)
+	}
+}
+
+func TestAllowlistCheckRejectsBroadPrefixCoveringDenied(t *testing.T) {
+	cases := []struct{ role, entry string }{
+		{"writer", "Bash(git:*)"},
+		{"writer", "Bash(rm:*)"},
+		{"writer", "Bash(gh:*)"},
+		{"writer", "Bash(ao:*)"},
+		{"controller", "Bash(ao session:*)"},
+	}
+	for _, c := range cases {
+		out, err := runAllowlistCheck(t, `{"writer":[],"controller":[],"orchestrator":[],"`+c.role+`":["`+c.entry+`"]}`)
+		if err == nil {
+			t.Errorf("%s %s: expected non-zero exit: %s", c.role, c.entry, out)
+			continue
+		}
+		if !strings.Contains(out, c.role) || !strings.Contains(out, c.entry) {
+			t.Errorf("%s %s: message must name role and entry: %s", c.role, c.entry, out)
+		}
+	}
+}

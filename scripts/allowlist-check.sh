@@ -19,6 +19,9 @@ DESTRUCTIVE=(
 DENY_writer=("git push" "gh pr create" "gh pr merge" "ao pr merge" "ao spawn" "ao decision record" "${DESTRUCTIVE[@]}")
 DENY_controller=("gh pr merge" "ao pr merge" "ao spawn" "ao decision record" "ao session handoff-confirm" "${DESTRUCTIVE[@]}")
 DENY_orchestrator=("${DESTRUCTIVE[@]}")
+# Bases a role is explicitly granted although the daemon still denies their destructive variants
+# (the daemon deny list wins over the allow list).
+GRANTED_controller=("git push" "gh pr create")
 
 status=0
 for file in "$@"; do
@@ -36,6 +39,11 @@ for file in "$@"; do
         status=1
         continue
       fi
+      if [[ "$entry" == *" :*)" ]]; then
+        echo "$file: $role: space before ':*': $entry" >&2
+        status=1
+        continue
+      fi
       cmd="${entry#*(}"
       cmd="${cmd%)}"
       cmd="${cmd%:\*}"
@@ -43,6 +51,18 @@ for file in "$@"; do
         for d in "${denied[@]}"; do
           if [[ "$cmd" == "$d"* ]]; then
             echo "$file: $role: entry starts with denied prefix '$d': $entry" >&2
+            status=1
+          elif [[ "$d" == "$cmd"* ]]; then
+            # The entry's prefix covers the denied command, unless it is a granted base
+            # or the denied command continues the same word with a hyphen (a different verb).
+            rest="${d#"$cmd"}"
+            [[ "$rest" == -* ]] && continue
+            granted=0
+            case "$role" in
+              controller) for g in "${GRANTED_controller[@]}"; do [[ "$cmd" == "$g" ]] && granted=1; done ;;
+            esac
+            [ "$granted" = 1 ] && continue
+            echo "$file: $role: entry covers denied command '$d': $entry" >&2
             status=1
           fi
         done
